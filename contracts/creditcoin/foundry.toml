@@ -8,6 +8,10 @@ libs = ["lib"]
 # not set" under a post-merge EVM version. Pin to a pre-merge fork so the
 # interpreter uses DIFFICULTY semantics instead of expecting PREVRANDAO.
 evm_version = "london"
+# ProofGate.submitOrderProof has enough local variables (decoded log fields, proof
+# structs, replay key) to hit Solidity's 16-slot stack limit under the legacy
+# codegen. Compile via Yul IR instead of trimming the checks apart.
+via_ir = true
 
 [rpc_endpoints]
 creditcoin-cc3 = "${CREDITCOIN_RPC_URL}"

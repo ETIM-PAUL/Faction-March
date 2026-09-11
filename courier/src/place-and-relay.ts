@@ -1,13 +1,14 @@
 /**
- * Phase 4 thin vertical slice, end to end in one command:
+ * End to end in one command:
  *
- *   1. Place an order on OrderBook (Sepolia).
- *   2. Wait for Creditcoin to attest the containing block.
- *   3. Generate a proof and submit it to ProofGate (Creditcoin CC3).
- *   4. Read back the OrderArrived log and confirm zoneId/units match what was sent.
+ *   1. Register the game on ProofGate if it isn't active yet (Creditcoin CC3).
+ *   2. Place an order on OrderBook (Sepolia).
+ *   3. Wait for Creditcoin to attest the containing block.
+ *   4. Generate a proof and submit it to ProofGate.submitOrderProof (Creditcoin CC3).
+ *   5. Read back the OrderArrived log and confirm zoneId/units match what was sent.
  *
- * ProofGate is deliberately unguarded at this phase (see contracts/creditcoin/src/ProofGate.sol) —
- * this courier is a reference implementation, not the only permissionless way to submit a proof.
+ * ProofGate is hardened as of Phase 5 (see contracts/creditcoin/src/ProofGate.sol) — this
+ * courier is a reference implementation, not the only permissionless way to submit a proof.
  */
 import 'dotenv/config';
 import { createRequire } from 'module';
@@ -44,6 +45,14 @@ async function main() {
 
   const orderBook = new ethers.Contract(orderBookAddress, orderBookArtifact.abi, sourceWallet);
   const orderFee: bigint = await orderBook.orderFee();
+
+  const proofGate = new ethers.Contract(proofGateAddress, proofGateArtifact.abi, ccWallet);
+  const gameActive: boolean = await proofGate.activeGames(gameId);
+  if (!gameActive) {
+    console.log(`Registering game ${gameId} on ProofGate ${proofGateAddress}...`);
+    const registerTx = await proofGate.registerGame(gameId);
+    await registerTx.wait();
+  }
 
   console.log(`Placing order on OrderBook ${orderBookAddress}: gameId=${gameId} zoneId=${zoneId} units=${units} fee=${ethers.formatEther(orderFee)} ETH`);
   const tx = await orderBook.placeOrder(gameId, zoneId, units, { value: orderFee });
@@ -83,11 +92,7 @@ async function main() {
   const proof = proofResult.data;
 
   console.log(`Submitting proof to ProofGate ${proofGateAddress}...`);
-  const proofGate = new ethers.Contract(proofGateAddress, proofGateArtifact.abi, ccWallet);
-  const action = await proofGate.ACTION_RELAY_ORDER();
-  const verifyTx = await proofGate.execute(
-    action,
-    proof.chainKey,
+  const verifyTx = await proofGate.submitOrderProof(
     proof.headerNumber,
     proof.txBytes,
     proof.merkleProof.root,
@@ -97,7 +102,7 @@ async function main() {
   );
   console.log(`Submitted: ${verifyTx.hash}`);
   const verifyReceipt = await verifyTx.wait();
-  if (!verifyReceipt || verifyReceipt.status !== 1) throw new Error('ProofGate.execute failed');
+  if (!verifyReceipt || verifyReceipt.status !== 1) throw new Error('ProofGate.submitOrderProof failed');
 
   const arrivedEvent = verifyReceipt.logs
     .map((log: any) => {
