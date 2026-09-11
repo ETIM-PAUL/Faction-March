@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install JS deps
+        run: npm install
+
+      - name: Typecheck spikes/courier
+        run: npm run typecheck
+
+      - name: Build contracts
+        run: npm run build:contracts
+
+      - name: Test contracts
+        run: npm run test:contracts

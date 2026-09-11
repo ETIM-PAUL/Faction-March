@@ -1,0 +1,25 @@
+{
+  "name": "faction-march",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "spike:chain-info": "tsx spikes/01-chain-info.ts",
+    "spike:full": "tsx spikes/02-full-attestation-spike.ts",
+    "typecheck": "tsc --noEmit",
+    "build:contracts": "forge build --root contracts/source && forge build --root contracts/creditcoin",
+    "test:contracts": "forge test --root contracts/source && forge test --root contracts/creditcoin",
+    "test": "npm run typecheck && npm run test:contracts"
+  },
+  "dependencies": {
+    "@gluwa/usc-sdk": "0.18.0",
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.7.0"
+  }
+}

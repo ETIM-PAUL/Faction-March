@@ -1,0 +1,7 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+[rpc_endpoints]
+creditcoin-cc3 = "${CREDITCOIN_RPC_URL}"
