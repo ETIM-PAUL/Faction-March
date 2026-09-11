@@ -2,6 +2,12 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+# CC3's Frontier/Substrate EVM pallet doesn't populate the post-merge
+# `prevrandao` header field the way go-ethereum does, which makes forge's
+# local script simulation fail with "header validation error: prevrandao
+# not set" under a post-merge EVM version. Pin to a pre-merge fork so the
+# interpreter uses DIFFICULTY semantics instead of expecting PREVRANDAO.
+evm_version = "london"
 
 [rpc_endpoints]
 creditcoin-cc3 = "${CREDITCOIN_RPC_URL}"

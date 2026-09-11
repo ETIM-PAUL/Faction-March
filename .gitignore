@@ -9,3 +9,6 @@ cache_forge/
 broadcast/
 *.log
 .DS_Store
+faction-march-build-plan.md
+
+/spikes/FINDINGS.md

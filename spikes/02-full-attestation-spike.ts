@@ -106,17 +106,25 @@ async function main() {
   console.log(`\nTOTAL wall-clock, broadcast -> verified: ${timings.totalMs}ms (${(timings.totalMs / 1000 / 60).toFixed(2)} min)`);
 
   console.log('\n--- Decoding exactly what the proven txBytes contains ---');
-  const decoderContract = new ethers.Contract(decoderLibraryAddress, evmV1DecoderAbi, ccRpc);
-  const decoded = await utils.decoder.decodeEvmV1Transaction(proof.txBytes, decoderContract);
-  console.log(utils.decoder.formatDecodedTransaction(decoded));
+  try {
+    const decoderContract = new ethers.Contract(decoderLibraryAddress, evmV1DecoderAbi, ccRpc);
+    const decoded = await utils.decoder.decodeEvmV1Transaction(proof.txBytes, decoderContract);
+    console.log(utils.decoder.formatDecodedTransaction(decoded));
 
-  const anyData = decoded.data as any;
-  console.log('\nFields present in the decoded/proven payload:');
-  console.log(`  commonTx.from (sender):        ${anyData.commonTx?.from}`);
-  console.log(`  commonTx.to (target contract):  ${anyData.commonTx?.to}`);
-  console.log(`  receipt.receiptStatus:          ${anyData.receipt?.receiptStatus}  <- success/revert status`);
-  console.log(`  receipt.receiptLogs[].address_:  ${anyData.receipt?.receiptLogs?.map((l: any) => l.address_)}  <- log emitter(s)`);
-  console.log(`  receipt.receiptLogs[].topics:    ${JSON.stringify(anyData.receipt?.receiptLogs?.map((l: any) => l.topics))}`);
+    const anyData = decoded.data as any;
+    console.log('\nFields present in the decoded/proven payload:');
+    console.log(`  commonTx.from (sender):        ${anyData.commonTx?.from}`);
+    console.log(`  commonTx.to (target contract):  ${anyData.commonTx?.to}`);
+    console.log(`  receipt.receiptStatus:          ${anyData.receipt?.receiptStatus}  <- success/revert status`);
+    console.log(`  receipt.receiptLogs[].address_:  ${anyData.receipt?.receiptLogs?.map((l: any) => l.address_)}  <- log emitter(s)`);
+    console.log(`  receipt.receiptLogs[].topics:    ${JSON.stringify(anyData.receipt?.receiptLogs?.map((l: any) => l.topics))}`);
+  } catch (err) {
+    // Known open issue: EVM_V1_DECODER_LIBRARY_ADDRESS from the tutorial repo currently
+    // has no callable external functions on CC3 testnet (just solc's revert stub for a
+    // library with only internal functions). See spikes/FINDINGS.md. Doesn't block the
+    // core send-attest-prove-verify measurement above, so don't let it kill the run.
+    console.warn(`Decode step failed (known open issue, see FINDINGS.md): ${(err as Error).message}`);
+  }
 
   console.log('\n=== SUMMARY (copy into FINDINGS.md) ===');
   console.log(JSON.stringify({ timings, chainKey: proof.chainKey, header: proof.headerNumber, txHash: proof.txHash, verifyTxHash: verifyTx.hash }, null, 2));
