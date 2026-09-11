@@ -7,6 +7,7 @@
   "scripts": {
     "spike:chain-info": "tsx spikes/01-chain-info.ts",
     "spike:full": "tsx spikes/02-full-attestation-spike.ts",
+    "courier:place-and-relay": "tsx courier/src/place-and-relay.ts",
     "typecheck": "tsc --noEmit",
     "build:contracts": "forge build --root contracts/source && forge build --root contracts/creditcoin",
     "test:contracts": "forge test --root contracts/source && forge test --root contracts/creditcoin",
