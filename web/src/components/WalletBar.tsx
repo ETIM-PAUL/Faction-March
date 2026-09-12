@@ -9,20 +9,20 @@ export function WalletBar({ wallet }: { wallet: ReturnType<typeof useWallet> }) 
     chainId === SEPOLIA_CHAIN_ID ? 'Sepolia' : chainId === CREDITCOIN_CHAIN_ID ? 'Creditcoin CC3' : chainId ? `Chain ${chainId}` : '—';
 
   return (
-    <div className="wallet-bar">
-      <div className="wallet-bar-left">
-        <strong>Faction March</strong>
-        <span className="muted">orders are Sepolia transactions; proofs make them real on Creditcoin</span>
+    <div className="command-bar">
+      <div className="command-bar-left">
+        <span className="wordmark">Faction March</span>
+        <span className="wordmark-tag">orders are Sepolia transactions; proofs make them real on Creditcoin</span>
       </div>
-      <div className="wallet-bar-right">
+      <div className="command-bar-right">
         {address ? (
           <>
             <span className="pill">{networkLabel}</span>
-            <span className="pill">{shortAddress(address)}</span>
-            <button onClick={switchToSepolia} disabled={chainId === SEPOLIA_CHAIN_ID}>
+            <span className="pill mono">{shortAddress(address)}</span>
+            <button className="ghost" onClick={switchToSepolia} disabled={chainId === SEPOLIA_CHAIN_ID}>
               Switch to Sepolia
             </button>
-            <button onClick={switchToCreditcoin} disabled={chainId === CREDITCOIN_CHAIN_ID}>
+            <button className="ghost" onClick={switchToCreditcoin} disabled={chainId === CREDITCOIN_CHAIN_ID}>
               Switch to CC3
             </button>
           </>

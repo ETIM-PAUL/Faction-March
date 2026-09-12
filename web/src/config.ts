@@ -36,7 +36,7 @@ export const CREDITCOIN_NETWORK_PARAMS = {
 };
 
 export const FACTION_NAMES = ['None', 'Alpha', 'Beta', 'Gamma'] as const;
-export const FACTION_COLORS = ['#6b7280', '#ef4444', '#3b82f6', '#22c55e'] as const;
+export const FACTION_COLORS = ['#7b828c', '#c1584a', '#5b9bc4', '#96a86a'] as const;
 
-/** Rough prior from Phase 1: Sepolia attestation typically takes ~9 minutes. */
+/** Sepolia attestation typically takes ~9 minutes, measured against real transactions. */
 export const TYPICAL_MARCH_TIME_MS = 9 * 60 * 1000;

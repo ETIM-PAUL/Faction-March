@@ -44,17 +44,13 @@ export default function App() {
       <WalletBar wallet={wallet} />
       <main>
         <GameSelector wallet={wallet} gameId={gameId} setGameId={setGameId} myFaction={myFaction} />
-        <div className="grid two">
-          <ZoneMap gameId={gameId} game={game} />
-          <div className="stack">
-            <OrderComposer wallet={wallet} gameId={gameId} />
-            <WarChestPanel wallet={wallet} gameId={gameId} game={game} myFaction={myFaction} />
-          </div>
-        </div>
-        <div className="grid two">
-          <InFlightPanel orders={orders} />
+        <ZoneMap gameId={gameId} game={game} />
+        <InFlightPanel orders={orders} />
+        <div className="deck">
+          <OrderComposer wallet={wallet} gameId={gameId} />
           <CourierBoard wallet={wallet} orders={orders} />
         </div>
+        <WarChestPanel wallet={wallet} gameId={gameId} game={game} myFaction={myFaction} />
       </main>
     </div>
   );

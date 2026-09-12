@@ -84,35 +84,30 @@ export function GameSelector({
   }
 
   return (
-    <div className="card">
-      <h2>Game</h2>
-      <div className="row">
-        <label>
-          Game ID{' '}
-          <input
-            type="number"
-            min={1}
-            value={gameId?.toString() ?? ''}
-            onChange={(e) => setGameId(BigInt(e.target.value || '0'))}
-            style={{ width: 80 }}
-          />
-        </label>
-        <span className="muted">{gameCount.toString()} game(s) created so far</span>
-      </div>
-      <div className="row">
-        <button onClick={createGame} disabled={busy}>
-          Create new game
-        </button>
-        <button onClick={joinGame} disabled={busy || gameId === null || !wallet.address}>
-          Join game {gameId?.toString() ?? ''}
-        </button>
-        {myFaction !== null && myFaction > 0 && (
-          <span className="pill" style={{ background: factionColor(myFaction) }}>
-            You are {factionName(myFaction)}
-          </span>
-        )}
-      </div>
-      {status && <p className="muted">{status}</p>}
+    <div className="campaign-strip">
+      <label>
+        Game ID
+        <input
+          type="number"
+          min={1}
+          value={gameId?.toString() ?? ''}
+          onChange={(e) => setGameId(BigInt(e.target.value || '0'))}
+          style={{ width: 80 }}
+        />
+      </label>
+      <span className="muted mono">{gameCount.toString()} created so far</span>
+      <button className="ghost" onClick={createGame} disabled={busy}>
+        Create new game
+      </button>
+      <button className="ghost" onClick={joinGame} disabled={busy || gameId === null || !wallet.address}>
+        Join game {gameId?.toString() ?? ''}
+      </button>
+      {myFaction !== null && myFaction > 0 && (
+        <span className="pill faction" style={{ color: factionColor(myFaction) }}>
+          You are {factionName(myFaction)}
+        </span>
+      )}
+      {status && <span className="muted">{status}</span>}
     </div>
   );
 }

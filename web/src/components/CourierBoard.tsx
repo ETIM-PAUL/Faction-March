@@ -61,59 +61,58 @@ export function CourierBoard({ wallet, orders }: { wallet: ReturnType<typeof use
   }
 
   return (
-    <div className="card">
-      <h2>Courier board</h2>
-      <p className="muted">
-        Anyone can submit anyone's proof — this board is not a privileged role. Claiming pays the fixed bounty from
-        ProofGate's pool if it's funded.
-      </p>
+    <div className="panel">
+      <div className="panel-header">
+        <h2>Courier board</h2>
+        <span className="panel-eyebrow">no privileged role — anyone can carry a proof</span>
+      </div>
       {pending.length === 0 ? (
         <p className="muted">Nothing waiting on a courier.</p>
       ) : (
-        <table className="orders-table">
-          <thead>
-            <tr>
-              <th>Commander</th>
-              <th>Zone</th>
-              <th>Sepolia block</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {pending.map((o) => {
-              const attested = attestedHeight !== null && attestedHeight >= o.sepoliaBlock;
-              const batchable = pending.filter(
-                (other) => other.key !== o.key && Math.abs(other.sepoliaBlock - o.sepoliaBlock) <= BATCH_RANGE_BLOCKS
-              ).length;
-              return (
-                <tr key={o.key}>
-                  <td>{shortAddress(o.commander)}</td>
-                  <td>{o.zoneId}</td>
-                  <td>{o.sepoliaBlock}</td>
-                  <td>
-                    {attested ? (
-                      <span className="pill" style={{ background: '#22c55e' }}>
-                        attested
-                      </span>
-                    ) : (
-                      <span className="pill">waiting for attestation</span>
-                    )}
-                    {batchable > 0 && (
-                      <span className="muted"> · batchable with {batchable} other{batchable === 1 ? '' : 's'} (CLI: courier:batch-relay)</span>
-                    )}
-                    {statusByKey[o.key] && <div className="muted">{statusByKey[o.key]}</div>}
-                  </td>
-                  <td>
-                    <button onClick={() => claim(o)} disabled={!attested || busyKey === o.key || !wallet.address}>
-                      {busyKey === o.key ? 'Working…' : 'Submit proof'}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Commander</th>
+                <th>Zone</th>
+                <th>Sepolia block</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pending.map((o) => {
+                const attested = attestedHeight !== null && attestedHeight >= o.sepoliaBlock;
+                const batchable = pending.filter(
+                  (other) => other.key !== o.key && Math.abs(other.sepoliaBlock - o.sepoliaBlock) <= BATCH_RANGE_BLOCKS
+                ).length;
+                return (
+                  <tr key={o.key}>
+                    <td className="mono">{shortAddress(o.commander)}</td>
+                    <td className="num">{o.zoneId}</td>
+                    <td className="num">{o.sepoliaBlock}</td>
+                    <td>
+                      {attested ? (
+                        <span className="pill attested">attested</span>
+                      ) : (
+                        <span className="pill waiting">waiting for attestation</span>
+                      )}
+                      {batchable > 0 && (
+                        <span className="muted"> · batchable with {batchable} other{batchable === 1 ? '' : 's'} (CLI: courier:batch-relay)</span>
+                      )}
+                      {statusByKey[o.key] && <div className="muted">{statusByKey[o.key]}</div>}
+                    </td>
+                    <td>
+                      <button onClick={() => claim(o)} disabled={!attested || busyKey === o.key || !wallet.address}>
+                        {busyKey === o.key ? 'Working…' : 'Submit proof'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

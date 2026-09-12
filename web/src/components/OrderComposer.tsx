@@ -50,15 +50,18 @@ export function OrderComposer({ wallet, gameId }: { wallet: ReturnType<typeof us
   }
 
   return (
-    <div className="card">
-      <h2>Place an order (Sepolia)</h2>
-      <div className="row">
+    <div className="panel">
+      <div className="panel-header">
+        <h2>Dispatch an order</h2>
+        <span className="panel-eyebrow">Sepolia</span>
+      </div>
+      <div className="field-row">
         <label>
-          Zone{' '}
+          Zone
           <input type="number" min={0} value={zoneId} onChange={(e) => setZoneId(Number(e.target.value))} style={{ width: 60 }} />
         </label>
         <label>
-          Units{' '}
+          Units
           <input type="number" min={1} value={units} onChange={(e) => setUnits(Number(e.target.value))} style={{ width: 70 }} />
         </label>
         <button onClick={placeOrder} disabled={busy || gameId === null || !wallet.address}>
@@ -66,7 +69,7 @@ export function OrderComposer({ wallet, gameId }: { wallet: ReturnType<typeof us
         </button>
       </div>
       <p className="muted">Fixed fee: {orderFeeEth ? `${orderFeeEth} ETH` : '…'} on Sepolia.</p>
-      {status && <p>{status}</p>}
+      {status && <p className="muted">{status}</p>}
     </div>
   );
 }

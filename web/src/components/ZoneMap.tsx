@@ -65,20 +65,22 @@ export function ZoneMap({ gameId, game }: { gameId: bigint | null; game: GameDat
     };
   }, [gameId]);
 
-  if (gameId === null) return <div className="card">Pick a game to see its board.</div>;
-  if (game.loading) return <div className="card">Loading board…</div>;
-  if (game.error) return <div className="card error">{game.error}</div>;
+  if (gameId === null) return <div className="panel">Pick a game to see its board.</div>;
+  if (game.loading) return <div className="panel">Loading board…</div>;
+  if (game.error) return <div className="panel error">{game.error}</div>;
 
-  const stateLabel = ['OPEN (joining)', 'ACTIVE', 'SETTLED'][game.state] ?? 'unknown';
+  const stateLabel = ['OPEN — JOINING', 'ACTIVE', 'SETTLED'][game.state] ?? 'UNKNOWN';
+  const stateClass = ['state-open', 'state-active', 'state-settled'][game.state] ?? '';
 
   return (
-    <div className="card">
-      <h2>
-        Zone map — game {gameId.toString()} <span className="pill">{stateLabel}</span>
-      </h2>
+    <div className="panel hero-panel">
+      <div className="panel-header">
+        <h2>Zone map — game {gameId.toString()}</h2>
+        <span className={`stamp ${stateClass}`}>{stateLabel}</span>
+      </div>
       <div className="zone-grid">
         {game.zones.map((zone) => (
-          <div key={zone.zoneId} className="zone" style={{ borderColor: factionColor(zone.owner) }}>
+          <div key={zone.zoneId} className="zone" style={{ ['--zone-color' as string]: factionColor(zone.owner) }}>
             <div className="zone-id">Zone {zone.zoneId}</div>
             <div className="zone-owner" style={{ color: factionColor(zone.owner) }}>
               {factionName(zone.owner)}

@@ -1,38 +1,133 @@
 # Faction March
 
-A faction territory war where orders are Sepolia transactions that only take
-effect once someone proves them to Creditcoin. See
-[`faction-march-build-plan.md`](./faction-march-build-plan.md) for the full
-design and phase-by-phase build plan.
+An Attestcoin-secured territory war: orders are Sepolia transactions, and
+they only take effect once someone proves them to Creditcoin CC3. This
+README leads with that integration — what it proves, how it's hardened,
+and how it resolves in the same transaction it verifies — before getting to
+the game itself. See [`spikes/FINDINGS.md`](./spikes/FINDINGS.md) for the
+feasibility research and [`SECURITY.md`](./SECURITY.md) for the self-audit.
 
-**Status: Phases 1-10 done.** Real send/attest/prove/verify round trip
-measured at ~8.9 min (Phase 1). Both networks build, test, and deploy
-cleanly (Phase 2). `OrderBook.sol` verified on Sepolia (Phase 3). Full
-place→attest→prove→relay slice runs end to end via one courier command
-(Phase 4). `ProofGate` is hardened — emitter allowlist, topic0/topic-count
-checks, gameId binding, fine-grained replay protection, and a staleness
-window, each with its own on-chain error and a dedicated negative test
-(Phase 5). `FactionMarch.sol` — 3-faction auto-balanced board, replenishing
-unit pools, block-driven OPEN→ACTIVE→SETTLED lifecycle, capture/reinforce/grind
-combat (Phase 6). `ProofGate` now calls `FactionMarch.resolveOrder` in the
-same transaction as verification, restricted by a one-shot access-control
-wiring step, with an integration test proving competing orders resolve in
-*proof-arrival* order, not Sepolia send order (Phase 7). Proof submission is
-now a permissionless, bountied job — a fixed CTC bounty per order, a batch
-entry point handling up to 10 proofs sharing one continuity proof, and a
-test proving two couriers racing for the same order pays exactly one of
-them (Phase 8). `WarChest.sol` — an undercollateralised credit line backed
-by proven territory: borrow against zones held, default when the repayment
-window passes, a permanent penalty that survives clearing, and an on-chain
-commander reputation record fed authentically from `ProofGate` in the same
-transaction as every resolved order (Phase 9). A browser frontend — zone
-map with ownership history, an order composer, an in-flight panel with a
-live ticking clock (never implying instant resolution), a permissionless
-courier board, and a war chest/credit panel — reads every screen live from
-the deployed contracts with no backend of its own, and can place orders,
-join games, and submit proofs from a connected wallet with no terminal
-required (Phase 10). See [`spikes/FINDINGS.md`](./spikes/FINDINGS.md) for
-details.
+---
+
+## Attestcoin integration
+
+### What the precompile proves — and doesn't
+
+The block-prover precompile (`0x...0FD2`) cryptographically checks a
+`ContinuityResponse`: that `txBytes` is included at `txIndex` in Sepolia
+block `headerNumber`, and that `headerNumber` chains back to a checkpoint
+Creditcoin has already attested. That's the whole guarantee. Confirmed live
+against a real Sepolia transaction: `verifySingle` returned `true`, and the
+same-tx `verifyAndEmitSingle` call succeeded on real data.
+
+`txBytes` itself decodes further, via Gluwa's `EvmV1Decoder` library
+(linked in at compile time, not called externally), into real receipt
+fields — `receiptStatus` and `receiptLogs[].address_`/`topics`/`data`. So
+the proof *is* a receipt-inclusion proof, not a bare transaction-inclusion
+one: emitter, topics, and success status are all in there.
+
+**What it does not do is stop `ProofGate` from being handed a proof for
+someone else's transaction.** Nothing in the precompile or the decoder
+restricts which contract's logs a *calling* contract accepts — that's
+`ProofGate`'s job, not the precompile's. Assume the precompile proves
+inclusion and nothing about intent, and build the consuming contract
+accordingly. That assumption is what the checks below are built on.
+
+### The seven checks
+
+`ProofGate.submitOrderProof` runs these in order, each with its own custom
+error so a rejection is legible on-chain:
+
+1. **Emitter allowlist** — `ForgedEmitter()`. The log's address must equal
+   the deployed `OrderBook`, set immutably at deploy.
+2. **topic0 match** — `WrongTopic0()`, against
+   `keccak256("OrderPlaced(address,uint256,uint16,uint32,uint64)")`.
+3. **Topic count == 4** — `WrongTopicCount(count)`. Guards against a
+   different event colliding on topic0 (the class of bug where ERC-20 and
+   ERC-721 `Transfer` share a topic0 and differ only in topic count).
+4. **gameId binding** — `GameNotActive(gameId)`, checked live against
+   `FactionMarch.currentState(gameId)` so an order for one game can't
+   resolve in another.
+5. **Replay protection** — `OrderAlreadyProcessed(orderKey)`, keyed on
+   `keccak256(blockHeight, txIndex, logIndex)`, not txHash or block number
+   alone — two orders can share a block, so a block-only cursor would let
+   one replay the other.
+6. **Ordering cursor — deliberately absent.** A monotonic per-game cursor
+   here would reject exactly the out-of-order proof arrivals the game
+   depends on (see *Arrival order is authority*, below). Documented in the
+   contract's own NatSpec, not just here.
+7. **Staleness window** — `OrderStale(orderHeight, latestAttestedHeight)`,
+   1200 Sepolia blocks (~4 hours), checked against the ChainInfo precompile
+   so a hoarded proof from an old game can't be dropped in later.
+
+Every check has a dedicated negative test (forged emitter, wrong topic0,
+topic-count mismatch, cross-game order, exact replay, same-block sibling
+replay, stale order), all passing — the demo video shows each of these
+proofs bouncing on camera.
+
+### Same-tx verify-and-execute
+
+After all seven checks pass, `submitOrderProof` calls
+`FactionMarch.resolveOrder(...)` directly, in the same transaction — no
+separate settlement step for anyone to front-run or skip. `resolveOrder` is
+restricted to the deployed `ProofGate` address via a one-shot
+`setProofGate(address)`, callable exactly once by whoever deployed
+`FactionMarch`; until it's called, `resolveOrder` fails closed. This is a
+narrow setup step, not a standing admin key — it moves no army, captures no
+zone, and can never be redirected.
+
+**Arrival order is authority.** Two orders targeting the same zone resolve
+in the order their *proofs* land on Creditcoin, not the order they were
+sent on Sepolia. Proven, not just asserted: two Foundry tests submit the
+same two competing orders' proofs in opposite sequences and get opposite
+winners —
+`test_arrivalOrder_laterSentOrderWinsBecauseItArrivedFirst` and
+`test_arrivalOrder_sentFirstButProvenSecond_loses`. Do not sort by Sepolia
+block number "for fairness" — that deletes the mechanic.
+
+### Batching
+
+Proof submission is a permissionless, bountied job — anyone can submit any
+proof, the reference courier in `courier/` holds no special key, and a
+commander can courier their own order and collect their own bounty.
+`submitOrderProofBatch` lands up to 10 proofs sharing one continuity proof
+in a single CC3 transaction (`MAX_BATCH_SIZE = 10` is the native
+precompile's own hard limit, not a choice made here). Real on-chain
+measurement, not a local mock: batching 10 orders costs **56.9% less gas**
+than 10 separate submissions (1,695,981 gas actual vs. 3,938,060 projected —
+see [`SECURITY.md`](./SECURITY.md#gas-profile-the-batch-path-at-10-queries)).
+A single bad order reverts the whole batch by design, so a courier is
+incentivized to only bundle orders it's already confident are valid. Two
+independent courier processes racing for the same bounty pay out to exactly
+one of them — the other's transaction reverts.
+
+---
+
+## The game
+
+Three factions, 12 zones, each `{ owner, garrison }`. Faction assignment
+auto-balances on join. A zone always has an owner once first taken — it
+changes hands but never reverts to neutral. Combat is deterministic:
+attacker beats garrison, zone flips with survivors as the new garrison;
+attacker loses, garrison shrinks. No randomness — the fog comes from
+`ProofGate`'s ~9-minute march time (see *Networks*, below), not from dice.
+Game lifecycle (`OPEN → ACTIVE → SETTLED`) is computed from block number,
+not stored, so no transaction is ever needed to "advance" it.
+
+Order fees accrue to a per-game war chest, split across factions by
+territory held. A faction can borrow against proven territory —
+`WarChest.sol` — to fund an offensive beyond its chest balance; the limit
+shrinks on default and every resolved order writes to an on-chain commander
+reputation record (orders issued, proven, bounties claimed, debts repaid).
+This is the credit thesis: an undercollateralised credit primitive that's
+played, not pitched, on a credit chain.
+
+The frontend (`web/`) is a zone map with ownership history, an order
+composer, a courier board, a war chest/credit panel, and — the single most
+important screen — an in-flight panel with a live ticking clock, so the
+UI never implies instant resolution.
+
+---
 
 ## Deployed contracts
 
@@ -43,7 +138,7 @@ details.
 | `WarChest` | Creditcoin CC3 | `0x54C3901F43d1ab2694357D304e6dAc1671Cf10a2` — credit line + reputation, reads territory from `FactionMarch` above, repayment window 50 blocks (demo-scale — production default is 5000) |
 | `ProofGate` | Creditcoin CC3 | `0xcEd503d0Eeb04C13F8974CaA85d06A22f0441C88` — hardened, wired to `FactionMarch` and `WarChest` above, allowlists `OrderBook` above, staleness window 1200 blocks, bounty 0.0001 CTC/order, bounty pool funded with 0.01 CTC |
 
-Superseded addresses, kept only as a record of what each phase demonstrated (see `spikes/FINDINGS.md`): `ProofGate` Phase 4 (unguarded, no emitter check) `0x296Ecf33a2c64F7A858133E60aC5d732Cd1b654c`; `ProofGate` Phase 5 (hardened, before FactionMarch wiring) `0x9fe147c23600CFcB7dd0DAEc4670d96868142744`; `FactionMarch` Phase 6 (no access control) `0x871F283Cf322F0206FE6424EE01529E186270eb5`; `ProofGate`/`FactionMarch` Phase 7 (wired, no bounty/batching) `0x0739BA644E4a25e529B04b870b54958c4C25131d` / `0x3181cFd3D6927656797208C20848c2B623bbf223`; `ProofGate`/`FactionMarch` Phase 8 (bounty/batching, no WarChest) `0x1BDA513AC071A6736Bb5569499CE9a7D96c3E0bc` / `0x92b474811aC11EbfFdcc21fc240993b46909ae69`.
+Superseded addresses, kept only as a record of earlier iterations (see `spikes/FINDINGS.md`): `ProofGate` unguarded, no emitter check `0x296Ecf33a2c64F7A858133E60aC5d732Cd1b654c`; `ProofGate` hardened, before `FactionMarch` wiring `0x9fe147c23600CFcB7dd0DAEc4670d96868142744`; `FactionMarch` no access control `0x871F283Cf322F0206FE6424EE01529E186270eb5`; `ProofGate`/`FactionMarch` wired, no bounty/batching `0x0739BA644E4a25e529B04b870b54958c4C25131d` / `0x3181cFd3D6927656797208C20848c2B623bbf223`; `ProofGate`/`FactionMarch` bounty/batching, no `WarChest` `0x1BDA513AC071A6736Bb5569499CE9a7D96c3E0bc` / `0x92b474811aC11EbfFdcc21fc240993b46909ae69`.
 
 ## Networks
 
@@ -54,6 +149,12 @@ Superseded addresses, kept only as a record of what each phase demonstrated (see
 | RPC URL | your `SOURCE_CHAIN_RPC_URL` | `https://rpc.cc3-testnet.creditcoin.network` |
 | `Hello.sol` smoke deploy | [`0xdcd00274619938e6467c0f8550209d81e8d5ee52`](https://sepolia.etherscan.io/address/0xdcd00274619938e6467c0f8550209d81e8d5ee52) | `0x33ba2c273a55c8a3766b597c1c9343b8e9a05f97` |
 
+**Real measured latency, not a rounded estimate:** broadcast → mined on
+Sepolia 15.1 s, mined → Creditcoin attestation 508.9 s (~8.5 min), proof
+generation 0.7 s, on-chain verify 7.4 s — **8.88 minutes total, broadcast to
+verified.** This is march time. The deck and demo state this number as
+measured, not an inflated "instant" resolution claim.
+
 Note: `contracts/creditcoin/foundry.toml` pins `evm_version = "london"` —
 CC3's Frontier/Substrate EVM pallet doesn't populate the post-merge
 `prevrandao` header field, which otherwise makes forge's local script
@@ -63,11 +164,11 @@ simulation fail with `header validation error: prevrandao not set`.
 
 | Path | What |
 |---|---|
-| `contracts/source/` | Foundry project for Ethereum Sepolia (`OrderBook.sol`, Phase 3) |
-| `contracts/creditcoin/` | Foundry project for Creditcoin CC3 (`ProofGate.sol`, `FactionMarch.sol`, `WarChest.sol` all done) |
+| `contracts/source/` | Foundry project for Ethereum Sepolia (`OrderBook.sol`) |
+| `contracts/creditcoin/` | Foundry project for Creditcoin CC3 (`ProofGate.sol`, `FactionMarch.sol`, `WarChest.sol`) |
 | `courier/` | Node/TS proof-delivery scripts — `place-and-relay.ts` is the reference courier |
-| `web/` | React + Vite frontend (Phase 10) — no backend, reads/writes contracts directly from the browser |
-| `spikes/` | Phase 1 feasibility scripts and findings |
+| `web/` | React + Vite frontend — no backend, reads/writes contracts directly from the browser |
+| `spikes/` | Feasibility research scripts and findings |
 
 ## Setup
 

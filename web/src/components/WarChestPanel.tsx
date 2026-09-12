@@ -67,62 +67,72 @@ export function WarChestPanel({
   if (gameId === null) return null;
 
   return (
-    <div className="card">
-      <h2>War chest — {formatCtc(game.chestBalance)} CTC</h2>
-      <table className="orders-table">
-        <thead>
-          <tr>
-            <th>Faction</th>
-            <th>Territory</th>
-            <th>Discount</th>
-            <th>Credit limit</th>
-            <th>Available</th>
-            <th>Borrowed</th>
-            <th>Defaults</th>
-          </tr>
-        </thead>
-        <tbody>
-          {game.factions.map((f) => (
-            <tr key={f.faction} style={{ opacity: f.inDefault ? 0.6 : 1 }}>
-              <td style={{ color: factionColor(f.faction) }}>{factionName(f.faction)}</td>
-              <td>{f.territory}</td>
-              <td>{(Number(f.discountBps) / 100).toFixed(1)}%</td>
-              <td>{formatCtc(f.creditLimit)}</td>
-              <td>{formatCtc(f.availableCredit)}</td>
-              <td>{formatCtc(f.borrowed)}</td>
-              <td>
-                {f.defaultCount.toString()}
-                {f.inDefault ? ' (line closed)' : ''}
-              </td>
+    <div className="panel">
+      <div className="panel-header">
+        <h2>War chest</h2>
+        <span className="panel-eyebrow mono">{formatCtc(game.chestBalance)} CTC on hand</span>
+      </div>
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Faction</th>
+              <th>Territory</th>
+              <th>Discount</th>
+              <th>Credit limit</th>
+              <th>Available</th>
+              <th>Borrowed</th>
+              <th>Defaults</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {game.factions.map((f) => (
+              <tr key={f.faction} style={{ opacity: f.inDefault ? 0.6 : 1 }}>
+                <td className="faction-cell" style={{ ['--row-color' as string]: factionColor(f.faction), color: factionColor(f.faction) }}>
+                  {factionName(f.faction)}
+                </td>
+                <td className="num">{f.territory}</td>
+                <td className="num">{(Number(f.discountBps) / 100).toFixed(1)}%</td>
+                <td className="num">{formatCtc(f.creditLimit)}</td>
+                <td className="num">{formatCtc(f.availableCredit)}</td>
+                <td className="num">{formatCtc(f.borrowed)}</td>
+                <td className="num">
+                  {f.defaultCount.toString()}
+                  {f.inDefault ? ' (line closed)' : ''}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
-      <div className="row">
+      <div className="field-row section-gap">
         <label>
-          Deposit (CTC) <input value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} style={{ width: 90 }} />
+          Deposit (CTC)
+          <input value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} style={{ width: 90 }} />
         </label>
-        <button onClick={deposit} disabled={busy || !wallet.address}>
+        <button className="ghost" onClick={deposit} disabled={busy || !wallet.address}>
           Fund chest
         </button>
       </div>
 
       {myFaction !== null && myFaction > 0 && (
         <>
-          <div className="row">
+          <div className="field-row">
             <label>
-              Borrow (CTC) <input value={borrowAmount} onChange={(e) => setBorrowAmount(e.target.value)} style={{ width: 90 }} />
+              Borrow (CTC)
+              <input value={borrowAmount} onChange={(e) => setBorrowAmount(e.target.value)} style={{ width: 90 }} />
             </label>
-            <button onClick={borrow} disabled={busy || !wallet.address}>
+            <button className="ghost" onClick={borrow} disabled={busy || !wallet.address}>
               Borrow against {factionName(myFaction)}'s territory
             </button>
           </div>
-          <div className="row">
+          <div className="field-row">
             <label>
-              Repay (CTC) <input value={repayAmount} onChange={(e) => setRepayAmount(e.target.value)} style={{ width: 90 }} />
+              Repay (CTC)
+              <input value={repayAmount} onChange={(e) => setRepayAmount(e.target.value)} style={{ width: 90 }} />
             </label>
-            <button onClick={repay} disabled={busy || !wallet.address}>
+            <button className="ghost" onClick={repay} disabled={busy || !wallet.address}>
               Repay {factionName(myFaction)}'s debt
             </button>
           </div>

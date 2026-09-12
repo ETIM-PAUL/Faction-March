@@ -221,6 +221,52 @@ contract ProofGateTest is Test {
         _submit(encodedTx, root, BLOCK_HEIGHT);
     }
 
+    /// @notice Phase 11: "what happens when no courier ever shows up." An order nobody ever
+    /// proves has zero side effects — resolveOrder never runs, so the commander's units were
+    /// never spent and remain fully available. There is no explicit "expire" transaction
+    /// because there is no state anywhere that needs cleaning up.
+    function test_neverCouriered_orderExpiresSafely_noStateChangeAndUnitsUnaffected() public {
+        uint256 unitsBefore = march.currentUnits(GAME_ID, commander);
+
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(99));
+        _mockTxIndex(root, 0);
+
+        // Simulate "no courier ever shows up": time passes well beyond the staleness window
+        // without anyone calling submitOrderProof.
+        uint64 farAheadHeight = BLOCK_HEIGHT + STALENESS_WINDOW + 1;
+        vm.mockCall(
+            CHAIN_INFO_PRECOMPILE,
+            abi.encodeWithSelector(GET_LATEST_SELECTOR),
+            abi.encode(IChainInfo.HeightHashResult({height: farAheadHeight, hash: bytes32(0), isAttestation: true, exists: true}))
+        );
+
+        // A late attempt correctly fails, and reverts fully undo the replay-guard write --
+        // this order's slot was never actually consumed.
+        bytes32 orderKey = keccak256(abi.encode(BLOCK_HEIGHT, uint64(0), uint256(0)));
+        vm.expectRevert(abi.encodeWithSelector(ProofGate.OrderStale.selector, BLOCK_HEIGHT, farAheadHeight));
+        _submit(encodedTx, root, BLOCK_HEIGHT);
+        assertFalse(gate.processedOrders(orderKey));
+
+        // Nothing was ever spent or locked: units are at least what they were before (only
+        // replenishment can move this number), and zone 3 was never touched.
+        assertGe(march.currentUnits(GAME_ID, commander), unitsBefore);
+        (FactionMarch.Faction owner, uint256 garrison) = march.zones(GAME_ID, 3);
+        assertEq(uint8(owner), uint8(FactionMarch.Faction.None), "zone was never touched by the stale order");
+        assertEq(garrison, 0);
+
+        // The commander can immediately place and resolve a fresh order for the same zone --
+        // the never-couriered order does not wedge the game in any way.
+        bytes memory freshTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(1)), 1);
+        bytes32 freshRoot = bytes32(uint256(100));
+        _mockTxIndex(freshRoot, 1);
+        _submit(freshTx, freshRoot, BLOCK_HEIGHT + 10);
+
+        (FactionMarch.Faction ownerAfter, uint256 garrisonAfter) = march.zones(GAME_ID, 3);
+        assertEq(uint8(ownerAfter), uint8(FactionMarch.Faction.Alpha));
+        assertEq(garrisonAfter, 5);
+    }
+
     function test_revert_transactionDidNotSucceed() public {
         bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 0);
         bytes32 root = bytes32(uint256(8));
