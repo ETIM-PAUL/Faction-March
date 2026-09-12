@@ -3,13 +3,15 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {ProofGate, IChainInfo} from "../src/ProofGate.sol";
+import {FactionMarch} from "../src/FactionMarch.sol";
 import {EvmV1Decoder} from "@gluwa/asc-contracts/contracts/common/EvmV1Decoder.sol";
 import {INativeQueryVerifier} from "@gluwa/asc-contracts/contracts/write-ability/common/INativeQueryVerifier.sol";
 
 /// @dev Neither the block-prover precompile (0xFD2) nor the ChainInfo precompile (0xFD3)
-/// exist in a plain forge EVM, so both are mocked with vm.mockCall. This suite is the
-/// "demo footage" Phase 5 calls for: one test per rejection path, each proving the
-/// corresponding attack actually bounces.
+/// exist in a plain forge EVM, so both are mocked with vm.mockCall. FactionMarch itself is
+/// real (not mocked) — it's pure Solidity with no precompile dependency, so this suite
+/// exercises the actual Phase 7 wiring: a successful submitOrderProof really does resolve
+/// combat on FactionMarch in the same call.
 contract ProofGateTest is Test {
     address constant BLOCK_PROVER = 0x0000000000000000000000000000000000000FD2;
     address constant CHAIN_INFO_PRECOMPILE = 0x0000000000000000000000000000000000000fD3;
@@ -23,15 +25,22 @@ contract ProofGateTest is Test {
     uint64 constant SOURCE_CHAIN_KEY = 1;
     uint64 constant STALENESS_WINDOW = 50;
     uint64 constant BLOCK_HEIGHT = 100;
+    uint256 constant GAME_ID = 1;
 
     ProofGate gate;
+    FactionMarch march;
     address orderBook;
     address commander;
+    address otherCommander;
 
     function setUp() public {
         orderBook = makeAddr("orderBook");
         commander = makeAddr("commander");
-        gate = new ProofGate(orderBook, SOURCE_CHAIN_KEY, STALENESS_WINDOW);
+        otherCommander = makeAddr("otherCommander");
+
+        march = new FactionMarch();
+        gate = new ProofGate(orderBook, address(march), SOURCE_CHAIN_KEY, STALENESS_WINDOW);
+        march.setProofGate(address(gate));
 
         vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(VERIFY_SELECTOR), abi.encode(true));
         // Default: "not stale" — latest attested height equals the block height most tests use.
@@ -41,7 +50,15 @@ contract ProofGateTest is Test {
             abi.encode(IChainInfo.HeightHashResult({height: BLOCK_HEIGHT, hash: bytes32(0), isAttestation: true, exists: true}))
         );
 
-        gate.registerGame(1);
+        // Game 1: both commanders join during OPEN, then roll into ACTIVE with plenty of
+        // replenished units for every test scenario.
+        uint256 gameId = march.createGame(12, 1, 100_000);
+        require(gameId == GAME_ID, "unexpected gameId");
+        vm.prank(commander);
+        march.join(GAME_ID); // Alpha
+        vm.prank(otherCommander);
+        march.join(GAME_ID); // Beta
+        vm.roll(block.number + 100);
     }
 
     function _mockTxIndex(bytes32 root, uint64 txIndex) internal {
@@ -82,19 +99,23 @@ contract ProofGateTest is Test {
         gate.submitOrderProof(blockHeight, encodedTx, root, siblings, bytes32(0), new bytes32[](0));
     }
 
-    function test_relaysDecodedOrder() public {
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, 1, 3), abi.encode(uint32(50), uint64(0)), 1);
+    function test_relaysDecodedOrderAndResolvesOnFactionMarch() public {
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
         bytes32 root = bytes32(uint256(1));
         _mockTxIndex(root, 0);
 
         vm.expectEmit(true, true, true, true, address(gate));
-        emit ProofGate.OrderArrived(commander, 1, 3, 50, 0);
+        emit ProofGate.OrderArrived(commander, GAME_ID, 3, 50, 0);
         _submit(encodedTx, root, BLOCK_HEIGHT);
+
+        (FactionMarch.Faction owner, uint256 garrison) = march.zones(GAME_ID, 3);
+        assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha));
+        assertEq(garrison, 50);
     }
 
     function test_revert_forgedEmitter() public {
         address attacker = makeAddr("attacker");
-        bytes memory encodedTx = _encodeTx(attacker, _orderTopics(commander, 1, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(attacker, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
         bytes32 root = bytes32(uint256(2));
         _mockTxIndex(root, 0);
 
@@ -103,7 +124,7 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_wrongTopic0() public {
-        bytes32[] memory topics = _orderTopics(commander, 1, 3);
+        bytes32[] memory topics = _orderTopics(commander, GAME_ID, 3);
         topics[0] = keccak256("SomethingElse(address)");
         bytes memory encodedTx = _encodeTx(orderBook, topics, abi.encode(uint32(50), uint64(0)), 1);
         bytes32 root = bytes32(uint256(3));
@@ -117,7 +138,7 @@ contract ProofGateTest is Test {
         bytes32[] memory topics = new bytes32[](3);
         topics[0] = ORDER_PLACED_SIGNATURE;
         topics[1] = bytes32(uint256(uint160(commander)));
-        topics[2] = bytes32(uint256(1));
+        topics[2] = bytes32(GAME_ID);
         bytes memory encodedTx = _encodeTx(orderBook, topics, abi.encode(uint32(50), uint64(0)), 1);
         bytes32 root = bytes32(uint256(4));
         _mockTxIndex(root, 0);
@@ -127,7 +148,7 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_crossGameOrder() public {
-        // gameId 99 was never registered — only game 1 is active (see setUp).
+        // gameId 99 doesn't exist on FactionMarch at all — only game 1 was created (see setUp).
         bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, 99, 3), abi.encode(uint32(50), uint64(0)), 1);
         bytes32 root = bytes32(uint256(5));
         _mockTxIndex(root, 0);
@@ -137,7 +158,7 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_exactReplay() public {
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, 1, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
         bytes32 root = bytes32(uint256(6));
         _mockTxIndex(root, 0);
 
@@ -153,21 +174,20 @@ contract ProofGateTest is Test {
         // Two genuinely different orders, same block, different txIndex — both must succeed
         // (proving replay protection isn't coarsely keyed on blockHeight alone). Then replaying
         // the first one's exact proof must still be rejected.
-        bytes memory orderA = _encodeTx(orderBook, _orderTopics(commander, 1, 1), abi.encode(uint32(10), uint64(0)), 1);
+        bytes memory orderA = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 1), abi.encode(uint32(10), uint64(0)), 1);
         bytes32 rootA = bytes32(uint256(0xA));
         _mockTxIndex(rootA, 2);
 
-        address otherCommander = makeAddr("otherCommander");
-        bytes memory orderC = _encodeTx(orderBook, _orderTopics(otherCommander, 1, 2), abi.encode(uint32(20), uint64(0)), 1);
+        bytes memory orderC = _encodeTx(orderBook, _orderTopics(otherCommander, GAME_ID, 2), abi.encode(uint32(20), uint64(0)), 1);
         bytes32 rootC = bytes32(uint256(0xC));
         _mockTxIndex(rootC, 5);
 
         vm.expectEmit(true, true, true, true, address(gate));
-        emit ProofGate.OrderArrived(commander, 1, 1, 10, 0);
+        emit ProofGate.OrderArrived(commander, GAME_ID, 1, 10, 0);
         _submit(orderA, rootA, BLOCK_HEIGHT);
 
         vm.expectEmit(true, true, true, true, address(gate));
-        emit ProofGate.OrderArrived(otherCommander, 1, 2, 20, 0);
+        emit ProofGate.OrderArrived(otherCommander, GAME_ID, 2, 20, 0);
         _submit(orderC, rootC, BLOCK_HEIGHT);
 
         vm.expectRevert(
@@ -177,7 +197,7 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_staleOrder() public {
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, 1, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
         bytes32 root = bytes32(uint256(7));
         _mockTxIndex(root, 0);
 
@@ -193,7 +213,7 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_transactionDidNotSucceed() public {
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, 1, 3), abi.encode(uint32(50), uint64(0)), 0);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 0);
         bytes32 root = bytes32(uint256(8));
         _mockTxIndex(root, 0);
 
@@ -201,8 +221,61 @@ contract ProofGateTest is Test {
         _submit(encodedTx, root, BLOCK_HEIGHT);
     }
 
-    function test_revert_gameAlreadyRegistered() public {
-        vm.expectRevert(abi.encodeWithSelector(ProofGate.GameAlreadyRegistered.selector, 1));
-        gate.registerGame(1);
+    // --- Phase 7: "arrival order is authority", not Sepolia send order ---
+
+    /// @notice Order A is sent FIRST on Sepolia (nonce 0); Order B is sent SECOND (nonce 1).
+    /// Both attack the same unclaimed zone with equal units, so whichever one's proof is
+    /// *processed* first captures it and the other (arriving second, equal strength) fails
+    /// to flip it back — a tie favours whoever already holds the zone. The courier proves
+    /// B before A here, and B wins, even though B was sent second on Sepolia. Reversing the
+    /// submission order below (test_arrivalOrder_sentFirstButProvenSecond_loses) shows the
+    /// opposite outcome with the identical two orders — proving it's proof-arrival order on
+    /// Creditcoin that decides the zone, never Sepolia send order.
+    function test_arrivalOrder_laterSentOrderWinsBecauseItArrivedFirst() public {
+        uint16 zoneId = 7;
+        uint32 units = 10;
+
+        bytes memory orderA = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, zoneId), abi.encode(units, uint64(0)), 1);
+        bytes32 rootA = bytes32(uint256(0x1001));
+        _mockTxIndex(rootA, 3);
+
+        bytes memory orderB =
+            _encodeTx(orderBook, _orderTopics(otherCommander, GAME_ID, zoneId), abi.encode(units, uint64(1)), 1);
+        bytes32 rootB = bytes32(uint256(0x1002));
+        _mockTxIndex(rootB, 7);
+
+        // Sepolia block order would be A (nonce 0) then B (nonce 1). The courier instead
+        // proves B first — its proof simply arrived on Creditcoin first.
+        _submit(orderB, rootB, BLOCK_HEIGHT);
+        _submit(orderA, rootA, BLOCK_HEIGHT + 1);
+
+        (FactionMarch.Faction owner, uint256 garrison) = march.zones(GAME_ID, zoneId);
+        assertEq(uint8(owner), uint8(FactionMarch.Faction.Beta), "later-sent order (B) should hold the zone");
+        // B captured first (garrison 10), then A's equal-strength attack is a tie: garrison
+        // drops to 0 but ownership doesn't flip back to A.
+        assertEq(garrison, 0, "tie: second mover (A) fails to flip it back");
+    }
+
+    function test_arrivalOrder_sentFirstButProvenSecond_loses() public {
+        uint16 zoneId = 8;
+        uint32 units = 10;
+
+        bytes memory orderA = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, zoneId), abi.encode(units, uint64(0)), 1);
+        bytes32 rootA = bytes32(uint256(0x2001));
+        _mockTxIndex(rootA, 3);
+
+        bytes memory orderB =
+            _encodeTx(orderBook, _orderTopics(otherCommander, GAME_ID, zoneId), abi.encode(units, uint64(1)), 1);
+        bytes32 rootB = bytes32(uint256(0x2002));
+        _mockTxIndex(rootB, 7);
+
+        // This time arrival order matches Sepolia send order: A (sent first) is also proven
+        // first, and holds the zone against B's equal-strength follow-up.
+        _submit(orderA, rootA, BLOCK_HEIGHT);
+        _submit(orderB, rootB, BLOCK_HEIGHT + 1);
+
+        (FactionMarch.Faction owner, uint256 garrison) = march.zones(GAME_ID, zoneId);
+        assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha), "first-sent order (A) holds when also proven first");
+        assertEq(garrison, 0, "tie: second mover (B) fails to flip it back");
     }
 }

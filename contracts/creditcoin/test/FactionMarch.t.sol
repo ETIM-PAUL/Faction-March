@@ -14,6 +14,10 @@ contract FactionMarchTest is Test {
 
     function setUp() public {
         march = new FactionMarch();
+        // Phase 6 tests exercise resolveOrder via direct calls, with no proofs involved —
+        // wiring the test contract itself as "proofGate" preserves that while still
+        // exercising the real onlyProofGate access control (Phase 7).
+        march.setProofGate(address(this));
     }
 
     function _createGame() internal returns (uint256 gameId) {
@@ -263,6 +267,47 @@ contract FactionMarchTest is Test {
 
         vm.expectRevert(FactionMarch.ZeroUnits.selector);
         march.resolveOrder(gameId, alice, 0, 0);
+    }
+
+    // --- access control (Phase 7) ---
+
+    function test_revert_resolveOrder_notProofGate() public {
+        uint256 gameId = _createGame();
+        _joinAndActivate(gameId, alice, 5);
+
+        vm.prank(makeAddr("randomCaller"));
+        vm.expectRevert(abi.encodeWithSelector(FactionMarch.NotProofGate.selector, makeAddr("randomCaller")));
+        march.resolveOrder(gameId, alice, 0, 1);
+    }
+
+    function test_revert_setProofGate_onlyOnce() public {
+        // setUp already called setProofGate(address(this)) once.
+        vm.expectRevert(FactionMarch.ProofGateAlreadySet.selector);
+        march.setProofGate(makeAddr("newProofGate"));
+    }
+
+    function test_revert_setProofGate_onlyDeployer() public {
+        FactionMarch fresh = new FactionMarch();
+        vm.prank(makeAddr("notTheDeployer"));
+        vm.expectRevert(FactionMarch.OnlyDeployer.selector);
+        fresh.setProofGate(makeAddr("someProofGate"));
+    }
+
+    function test_revert_setProofGate_zeroAddress() public {
+        FactionMarch fresh = new FactionMarch();
+        vm.expectRevert(FactionMarch.ZeroAddress.selector);
+        fresh.setProofGate(address(0));
+    }
+
+    function test_resolveOrder_unusableUntilWired() public {
+        FactionMarch fresh = new FactionMarch();
+        uint256 gameId = fresh.createGame(12, 1, 1000);
+        vm.prank(alice);
+        fresh.join(gameId);
+        vm.roll(block.number + 10);
+
+        vm.expectRevert(abi.encodeWithSelector(FactionMarch.NotProofGate.selector, address(this)));
+        fresh.resolveOrder(gameId, alice, 0, 1);
     }
 
     // --- full game, direct calls, no proofs ---

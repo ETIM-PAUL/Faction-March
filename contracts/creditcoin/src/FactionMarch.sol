@@ -3,11 +3,15 @@ pragma solidity ^0.8.28;
 
 /// @title FactionMarch
 /// @notice The board. Three factions fight over zones with unit pools that replenish over
-/// time, inside a block-number-driven OPEN -> ACTIVE -> SETTLED lifecycle. No cross-chain
-/// anything lives here (Phase 6) — `resolveOrder` is exercised by tests via direct calls.
-/// @dev UNGATED as of Phase 6: `resolveOrder` has no access control, so anyone can move any
-/// commander's units right now. Phase 7 restricts it to the deployed ProofGate contract —
-/// do not treat this contract as safe to point real players at before that lands.
+/// time, inside a block-number-driven OPEN -> ACTIVE -> SETTLED lifecycle.
+/// @dev `resolveOrder` is restricted to `proofGate` (Phase 7) — no game state changes
+/// without a proof. `proofGate` is set exactly once, by whoever deployed this contract,
+/// via `setProofGate`. This breaks an unavoidable circular dependency (ProofGate's
+/// constructor needs FactionMarch's address; FactionMarch needs ProofGate's address to
+/// gate `resolveOrder`) with a narrow, single-use setup step rather than a standing admin
+/// key: `resolveOrder` reverts for everyone until it's called once, and it can never be
+/// called again afterwards. It moves no army, captures no zone, and opens no credit line —
+/// it only decides which contract is later allowed to do those things.
 contract FactionMarch {
     enum Faction {
         None,
@@ -44,6 +48,9 @@ contract FactionMarch {
     uint256 public constant UNITS_PER_BLOCK = 1;
     uint256 public constant MAX_UNIT_POOL = 500;
 
+    address public immutable deployer;
+    address public proofGate;
+
     uint256 public gameCount;
 
     mapping(uint256 => GameConfig) public games;
@@ -70,6 +77,28 @@ contract FactionMarch {
     error InvalidZone(uint16 zoneId, uint16 zoneCount);
     error ZeroUnits();
     error InsufficientUnits(uint256 requested, uint256 available);
+    error OnlyDeployer();
+    error ProofGateAlreadySet();
+    error ZeroAddress();
+    error NotProofGate(address caller);
+
+    constructor() {
+        deployer = msg.sender;
+    }
+
+    /// @notice One-shot wiring step: only the deployer, only once, only non-zero. See the
+    /// contract-level NatSpec for why this exists and why it isn't a standing admin key.
+    function setProofGate(address _proofGate) external {
+        if (msg.sender != deployer) revert OnlyDeployer();
+        if (proofGate != address(0)) revert ProofGateAlreadySet();
+        if (_proofGate == address(0)) revert ZeroAddress();
+        proofGate = _proofGate;
+    }
+
+    modifier onlyProofGate() {
+        if (msg.sender != proofGate) revert NotProofGate(msg.sender);
+        _;
+    }
 
     /// @notice Opens a new game. Permissionless — anyone can start one.
     function createGame(uint16 zoneCount, uint64 openDurationBlocks, uint64 activeDurationBlocks)
@@ -126,8 +155,7 @@ contract FactionMarch {
     /// @notice Resolves one order: spend units from the commander's pool, then either
     /// reinforce a zone they already own, capture an enemy/unclaimed zone (if units exceed
     /// its garrison — a tie favours the defender), or grind down its garrison.
-    /// @dev No access control. Phase 7 makes this callable only by ProofGate.
-    function resolveOrder(uint256 gameId, address commander, uint16 zoneId, uint32 units) external {
+    function resolveOrder(uint256 gameId, address commander, uint16 zoneId, uint32 units) external onlyProofGate {
         if (!games[gameId].exists) revert GameDoesNotExist(gameId);
         if (currentState(gameId) != GameState.ACTIVE) revert GameNotActive(gameId);
         if (zoneId >= games[gameId].zoneCount) revert InvalidZone(zoneId, games[gameId].zoneCount);

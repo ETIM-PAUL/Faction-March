@@ -1,14 +1,16 @@
 /**
  * End to end in one command:
  *
- *   1. Register the game on ProofGate if it isn't active yet (Creditcoin CC3).
+ *   1. Create a game on FactionMarch if no gameId was given (Creditcoin CC3), and join it.
  *   2. Place an order on OrderBook (Sepolia).
  *   3. Wait for Creditcoin to attest the containing block.
- *   4. Generate a proof and submit it to ProofGate.submitOrderProof (Creditcoin CC3).
- *   5. Read back the OrderArrived log and confirm zoneId/units match what was sent.
+ *   4. Generate a proof and submit it to ProofGate.submitOrderProof (Creditcoin CC3), which
+ *      verifies it and calls FactionMarch.resolveOrder in the same transaction.
+ *   5. Read back OrderArrived and FactionMarch's combat event, and confirm zoneId/units
+ *      match what was sent.
  *
- * ProofGate is hardened as of Phase 5 (see contracts/creditcoin/src/ProofGate.sol) — this
- * courier is a reference implementation, not the only permissionless way to submit a proof.
+ * Usage: npm run courier:place-and-relay -- [zoneId] [units] [gameId]
+ * Omit gameId to create a fresh game each run.
  */
 import 'dotenv/config';
 import { createRequire } from 'module';
@@ -18,6 +20,9 @@ import { chainInfo, proofProvider } from '@gluwa/usc-sdk';
 const require = createRequire(import.meta.url);
 const orderBookArtifact = require('../../contracts/source/out/OrderBook.sol/OrderBook.json');
 const proofGateArtifact = require('../../contracts/creditcoin/out/ProofGate.sol/ProofGate.json');
+const factionMarchArtifact = require('../../contracts/creditcoin/out/FactionMarch.sol/FactionMarch.json');
+
+const FACTION_NAMES = ['None', 'Alpha', 'Beta', 'Gamma'];
 
 function need(name: string): string {
   const v = process.env[name];
@@ -33,10 +38,11 @@ async function main() {
   const sourceChainKey = Number(process.env.SOURCE_CHAIN_KEY ?? '1');
   const orderBookAddress = need('ORDER_BOOK_ADDRESS');
   const proofGateAddress = need('PROOF_GATE_ADDRESS');
+  const factionMarchAddress = need('FACTION_MARCH_ADDRESS');
 
-  const gameId = BigInt(process.argv[2] ?? '1');
-  const zoneId = Number(process.argv[3] ?? '3');
-  const units = Number(process.argv[4] ?? '50');
+  const zoneId = Number(process.argv[2] ?? '3');
+  const units = Number(process.argv[3] ?? '50');
+  const gameIdArg = process.argv[4];
 
   const sourceChainRpc = new ethers.JsonRpcProvider(sourceChainRpcUrl);
   const ccRpc = new ethers.JsonRpcProvider(creditcoinRpcUrl);
@@ -44,15 +50,39 @@ async function main() {
   const ccWallet = new ethers.Wallet(privateKey, ccRpc);
 
   const orderBook = new ethers.Contract(orderBookAddress, orderBookArtifact.abi, sourceWallet);
-  const orderFee: bigint = await orderBook.orderFee();
-
   const proofGate = new ethers.Contract(proofGateAddress, proofGateArtifact.abi, ccWallet);
-  const gameActive: boolean = await proofGate.activeGames(gameId);
-  if (!gameActive) {
-    console.log(`Registering game ${gameId} on ProofGate ${proofGateAddress}...`);
-    const registerTx = await proofGate.registerGame(gameId);
-    await registerTx.wait();
+  const factionMarch = new ethers.Contract(factionMarchAddress, factionMarchArtifact.abi, ccWallet);
+
+  let gameId: bigint;
+  if (gameIdArg) {
+    gameId = BigInt(gameIdArg);
+    console.log(`Using existing FactionMarch game ${gameId}`);
+  } else {
+    console.log(`Creating a new FactionMarch game on ${factionMarchAddress}...`);
+    const createTx = await factionMarch.createGame(12, 2, 100_000);
+    const createReceipt = await createTx.wait();
+    const createdEvent = createReceipt.logs
+      .map((log: any) => {
+        try {
+          return factionMarch.interface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((parsed: any) => parsed?.name === 'GameCreated');
+    if (!createdEvent) throw new Error('GameCreated not found in receipt');
+    gameId = createdEvent.args.gameId as bigint;
+    console.log(`Created game ${gameId}`);
   }
+
+  const commanderFaction: number = Number(await factionMarch.commanderFaction(gameId, ccWallet.address));
+  if (commanderFaction === 0) {
+    console.log(`Joining game ${gameId} on FactionMarch as ${ccWallet.address}...`);
+    const joinTx = await factionMarch.join(gameId);
+    await joinTx.wait();
+  }
+
+  const orderFee: bigint = await orderBook.orderFee();
 
   console.log(`Placing order on OrderBook ${orderBookAddress}: gameId=${gameId} zoneId=${zoneId} units=${units} fee=${ethers.formatEther(orderFee)} ETH`);
   const tx = await orderBook.placeOrder(gameId, zoneId, units, { value: orderFee });
@@ -104,15 +134,20 @@ async function main() {
   const verifyReceipt = await verifyTx.wait();
   if (!verifyReceipt || verifyReceipt.status !== 1) throw new Error('ProofGate.submitOrderProof failed');
 
-  const arrivedEvent = verifyReceipt.logs
-    .map((log: any) => {
-      try {
-        return proofGate.interface.parseLog(log);
-      } catch {
-        return null;
-      }
-    })
-    .find((parsed: any) => parsed?.name === 'OrderArrived');
+  // ethers' parseLog returns null (it does not throw) for a log whose topic0 isn't in that
+  // interface, so each candidate interface must be tried in turn rather than relying on catch.
+  function tryParse(iface: ethers.Interface, log: any) {
+    try {
+      return iface.parseLog(log);
+    } catch {
+      return null;
+    }
+  }
+  const parsedLogs = verifyReceipt.logs.map(
+    (log: any) => tryParse(proofGate.interface, log) ?? tryParse(factionMarch.interface, log)
+  );
+
+  const arrivedEvent = parsedLogs.find((parsed: any) => parsed?.name === 'OrderArrived');
   if (!arrivedEvent) throw new Error('OrderArrived not found — proof landed but ProofGate did not emit it');
 
   const arrived = {
@@ -128,6 +163,18 @@ async function main() {
   console.log(
     `OrderArrived on Creditcoin CC3: commander=${arrived.commander} gameId=${arrived.gameId} zoneId=${arrived.zoneId} units=${arrived.units} nonce=${arrived.nonce} — zoneId/units match sent order: ${matches}`
   );
+
+  const combatEvent = parsedLogs.find(
+    (parsed: any) => parsed?.name === 'ZoneCaptured' || parsed?.name === 'ZoneAttacked' || parsed?.name === 'ZoneReinforced'
+  );
+  if (combatEvent) {
+    console.log(`FactionMarch combat resolved in the SAME transaction: ${combatEvent.name}`, combatEvent.args);
+  } else {
+    console.log('WARNING: no FactionMarch combat event found in the same transaction — same-tx verify-and-execute did not fire as expected.');
+  }
+
+  const [owner, garrison] = await factionMarch.zones(gameId, zoneId);
+  console.log(`Zone ${zoneId} now owned by ${FACTION_NAMES[Number(owner)]} with garrison ${garrison}`);
 
   if (!matches) process.exitCode = 1;
 }

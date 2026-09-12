@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {INativeQueryVerifier, NativeQueryVerifierLib} from
     "@gluwa/asc-contracts/contracts/write-ability/common/INativeQueryVerifier.sol";
 import {EvmV1Decoder} from "@gluwa/asc-contracts/contracts/common/EvmV1Decoder.sol";
+import {FactionMarch} from "./FactionMarch.sol";
 
 /// @title IChainInfo
 /// @notice Minimal Solidity interface for the ChainInfo precompile at 0x...0fd3. Hand-written
@@ -26,10 +27,11 @@ interface IChainInfo {
 }
 
 /// @title ProofGate
-/// @notice Hardened verification layer (Phase 5). The block-prover precompile proves
-/// inclusion and continuity — nothing more. It does not prove who emitted a log, that the
-/// source transaction succeeded, or that a proof is fresh. ProofGate enforces all of that
-/// itself, in order, each with its own error so a rejection is legible on-chain:
+/// @notice Hardened verification layer (Phase 5) wired into march resolution (Phase 7). The
+/// block-prover precompile proves inclusion and continuity — nothing more. It does not
+/// prove who emitted a log, that the source transaction succeeded, or that a proof is
+/// fresh. ProofGate enforces all of that itself, in order, each with its own error so a
+/// rejection is legible on-chain:
 ///   1. emitter allowlist    -> ForgedEmitter
 ///   2. topic0 match         -> WrongTopic0
 ///   3. topic count == 4     -> WrongTopicCount
@@ -37,8 +39,12 @@ interface IChainInfo {
 ///   5. exact replay         -> OrderAlreadyProcessed, keyed on (blockHeight, txIndex, logIndex)
 ///   6. ordering cursor      -> deliberately NOT enforced; see note below
 ///   7. staleness window     -> OrderStale
-/// @dev No admin key anywhere: ORDER_BOOK/SOURCE_CHAIN_KEY/STALENESS_WINDOW_BLOCKS are
-/// immutable, registerGame and submitOrderProof are both permissionless.
+/// Once all seven pass, it calls FACTION_MARCH.resolveOrder(...) in the same transaction —
+/// same-tx verify-and-execute, no separate settlement step for anyone to front-run or skip.
+/// @dev No admin key anywhere: every field is immutable, submitOrderProof is permissionless.
+///
+/// Game existence/activity (check 4) is read live from FACTION_MARCH — there is exactly one
+/// source of truth for "is this game active," not a second registry duplicated here.
 ///
 /// On (6): Phase 7's entire mechanic is that competing orders resolve in *proof-arrival*
 /// order, not Sepolia block order ("Arrival order is authority"). A monotonic per-game
@@ -54,6 +60,7 @@ contract ProofGate {
 
     INativeQueryVerifier public immutable VERIFIER;
     IChainInfo public immutable CHAIN_INFO;
+    FactionMarch public immutable FACTION_MARCH;
 
     /// @notice The only contract ProofGate accepts OrderPlaced logs from.
     address public immutable ORDER_BOOK;
@@ -63,11 +70,6 @@ contract ProofGate {
     /// attested height are rejected as stale.
     uint64 public immutable STALENESS_WINDOW_BLOCKS;
 
-    /// @notice Permissionless game registry. Real lifecycle (closing/settling) belongs to
-    /// FactionMarch (Phase 6/7); this is the minimal standalone version Phase 5 needs to be
-    /// testable before that contract exists.
-    mapping(uint256 => bool) public activeGames;
-
     /// @notice Replay guard, keyed on (blockHeight, txIndex, logIndex) — never blockHeight
     /// alone (two orders can share a block) and never txHash alone (doesn't disambiguate
     /// position for the ordering story other checks rely on).
@@ -76,37 +78,28 @@ contract ProofGate {
     event OrderArrived(
         address indexed commander, uint256 indexed gameId, uint16 indexed zoneId, uint32 units, uint64 nonce
     );
-    event GameRegistered(uint256 indexed gameId);
 
     error ForgedEmitter();
     error WrongTopic0();
     error WrongTopicCount(uint256 count);
     error GameNotActive(uint256 gameId);
-    error GameAlreadyRegistered(uint256 gameId);
     error OrderAlreadyProcessed(bytes32 orderKey);
     error OrderStale(uint64 orderHeight, uint64 latestAttestedHeight);
     error TransactionDidNotSucceed();
     error ProofVerificationFailed();
 
-    constructor(address orderBook, uint64 sourceChainKey, uint64 stalenessWindowBlocks) {
+    constructor(address orderBook, address factionMarch, uint64 sourceChainKey, uint64 stalenessWindowBlocks) {
         VERIFIER = NativeQueryVerifierLib.getVerifier();
         CHAIN_INFO = IChainInfo(CHAIN_INFO_PRECOMPILE);
+        FACTION_MARCH = FactionMarch(factionMarch);
         ORDER_BOOK = orderBook;
         SOURCE_CHAIN_KEY = sourceChainKey;
         STALENESS_WINDOW_BLOCKS = stalenessWindowBlocks;
     }
 
-    /// @notice Opens ProofGate to orders for `gameId`. Permissionless — anyone can start a
-    /// game. Cannot be un-registered here; that's Phase 6/7's job once FactionMarch exists.
-    function registerGame(uint256 gameId) external {
-        if (activeGames[gameId]) revert GameAlreadyRegistered(gameId);
-        activeGames[gameId] = true;
-        emit GameRegistered(gameId);
-    }
-
     /// @notice Verify a proof of a Sepolia OrderBook.placeOrder transaction and, if it
-    /// passes every check, emit the decoded order. Callable by anyone — this is the
-    /// permissionless courier entry point (Phase 8).
+    /// passes every check, resolve it on FactionMarch in this same transaction. Callable by
+    /// anyone — this is the permissionless courier entry point (Phase 8).
     function submitOrderProof(
         uint64 blockHeight,
         bytes calldata encodedTransaction,
@@ -135,8 +128,12 @@ contract ProofGate {
         uint16 zoneId = uint16(uint256(log.topics[3]));
         (uint32 units, uint64 nonce) = abi.decode(log.data, (uint32, uint64));
 
-        // Check 4: gameId binding.
-        if (!activeGames[gameId]) revert GameNotActive(gameId);
+        // Check 4: gameId binding, read live from FactionMarch — the one source of truth.
+        try FACTION_MARCH.currentState(gameId) returns (FactionMarch.GameState state) {
+            if (state != FactionMarch.GameState.ACTIVE) revert GameNotActive(gameId);
+        } catch {
+            revert GameNotActive(gameId);
+        }
 
         // Check 5: exact replay / same-block sibling replay.
         uint64 txIndex = VERIFIER.calculateTxIndex(merkleProof);
@@ -151,6 +148,9 @@ contract ProofGate {
         }
 
         emit OrderArrived(commander, gameId, zoneId, units, nonce);
+
+        // Same-tx verify-and-execute: combat resolves in this transaction, not a later one.
+        FACTION_MARCH.resolveOrder(gameId, commander, zoneId, units);
     }
 
     /// @dev Checks 1-3. Scans logs for the first one emitted by ORDER_BOOK; once found, that
