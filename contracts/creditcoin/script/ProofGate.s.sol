@@ -7,19 +7,23 @@ import {FactionMarch} from "../src/FactionMarch.sol";
 
 /// @dev Run with: forge script script/ProofGate.s.sol --rpc-url creditcoin-cc3 --broadcast
 /// Required env: ORDER_BOOK_ADDRESS, FACTION_MARCH_ADDRESS. Optional: SOURCE_CHAIN_KEY
-/// (default 1, Sepolia), STALENESS_WINDOW_BLOCKS (default 1200, ~4 hours of Sepolia blocks).
+/// (default 1, Sepolia), STALENESS_WINDOW_BLOCKS (default 1200, ~4 hours of Sepolia blocks),
+/// BOUNTY_PER_ORDER_WEI (default 0.0001 ether).
 ///
 /// Deploys ProofGate, then immediately calls FactionMarch.setProofGate(<new address>) to
-/// finish the one-shot wiring — must run as the same wallet that deployed FactionMarch.
+/// finish the one-shot wiring — must run as the same wallet that deployed FactionMarch. If
+/// the second transaction fails to land (seen once on CC3 with no revert reason surfaced —
+/// see spikes/FINDINGS.md), retry it directly: `cast send <factionMarch> "setProofGate(address)" <gate>`.
 contract ProofGateScript is Script {
     function run() public returns (ProofGate gate) {
         address orderBook = vm.envAddress("ORDER_BOOK_ADDRESS");
         address factionMarchAddress = vm.envAddress("FACTION_MARCH_ADDRESS");
         uint64 sourceChainKey = uint64(vm.envOr("SOURCE_CHAIN_KEY", uint256(1)));
         uint64 stalenessWindowBlocks = uint64(vm.envOr("STALENESS_WINDOW_BLOCKS", uint256(1200)));
+        uint256 bountyPerOrder = vm.envOr("BOUNTY_PER_ORDER_WEI", uint256(0.0001 ether));
 
         vm.startBroadcast();
-        gate = new ProofGate(orderBook, factionMarchAddress, sourceChainKey, stalenessWindowBlocks);
+        gate = new ProofGate(orderBook, factionMarchAddress, sourceChainKey, stalenessWindowBlocks, bountyPerOrder);
         FactionMarch(factionMarchAddress).setProofGate(address(gate));
         vm.stopBroadcast();
 
@@ -28,6 +32,7 @@ contract ProofGateScript is Script {
         console.log("factionMarch:", factionMarchAddress);
         console.log("sourceChainKey:", sourceChainKey);
         console.log("stalenessWindowBlocks:", stalenessWindowBlocks);
+        console.log("bountyPerOrder (wei):", bountyPerOrder);
         console.log("FactionMarch.setProofGate: done");
     }
 }

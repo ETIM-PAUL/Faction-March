@@ -121,6 +121,8 @@ async function main() {
   if (!proofResult.success || !proofResult.data) throw new Error(`Proof generation failed: ${proofResult.error}`);
   const proof = proofResult.data;
 
+  const courierBalanceBefore: bigint = await ccRpc.getBalance(ccWallet.address);
+
   console.log(`Submitting proof to ProofGate ${proofGateAddress}...`);
   const verifyTx = await proofGate.submitOrderProof(
     proof.headerNumber,
@@ -175,6 +177,17 @@ async function main() {
 
   const [owner, garrison] = await factionMarch.zones(gameId, zoneId);
   console.log(`Zone ${zoneId} now owned by ${FACTION_NAMES[Number(owner)]} with garrison ${garrison}`);
+
+  const bountyPaidEvent = parsedLogs.find((parsed: any) => parsed?.name === 'BountyPaid');
+  const courierBalanceAfter: bigint = await ccRpc.getBalance(ccWallet.address);
+  const gasSpent = verifyReceipt.gasUsed * verifyReceipt.gasPrice;
+  if (bountyPaidEvent) {
+    console.log(
+      `Bounty paid: ${ethers.formatEther(bountyPaidEvent.args.amount)} CTC to ${bountyPaidEvent.args.courier}. Courier wallet balance change: ${ethers.formatEther(courierBalanceAfter - courierBalanceBefore)} CTC (net of ${ethers.formatEther(gasSpent)} CTC gas).`
+    );
+  } else {
+    console.log('No BountyPaid event — pool was likely dry (BOUNTY_PER_ORDER > bountyPool); order still resolved.');
+  }
 
   if (!matches) process.exitCode = 1;
 }

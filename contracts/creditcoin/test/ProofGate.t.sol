@@ -18,6 +18,9 @@ contract ProofGateTest is Test {
 
     bytes4 constant VERIFY_SELECTOR =
         bytes4(keccak256("verifyAndEmit(uint64,uint64,bytes,(bytes32,(bytes32,bool)[]),(bytes32,bytes32[]))"));
+    bytes4 constant VERIFY_BATCH_SELECTOR = bytes4(
+        keccak256("verifyAndEmit(uint64,uint64[],bytes[],(bytes32,(bytes32,bool)[])[],(bytes32,bytes32[]))")
+    );
     bytes4 constant TX_INDEX_SELECTOR = bytes4(keccak256("calculateTxIndex((bytes32,(bytes32,bool)[]))"));
     bytes4 constant GET_LATEST_SELECTOR = bytes4(keccak256("get_latest_attestation_height_and_hash(uint64)"));
     bytes32 constant ORDER_PLACED_SIGNATURE = keccak256("OrderPlaced(address,uint256,uint16,uint32,uint64)");
@@ -26,6 +29,7 @@ contract ProofGateTest is Test {
     uint64 constant STALENESS_WINDOW = 50;
     uint64 constant BLOCK_HEIGHT = 100;
     uint256 constant GAME_ID = 1;
+    uint256 constant BOUNTY_PER_ORDER = 0.0001 ether;
 
     ProofGate gate;
     FactionMarch march;
@@ -39,10 +43,11 @@ contract ProofGateTest is Test {
         otherCommander = makeAddr("otherCommander");
 
         march = new FactionMarch();
-        gate = new ProofGate(orderBook, address(march), SOURCE_CHAIN_KEY, STALENESS_WINDOW);
+        gate = new ProofGate(orderBook, address(march), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER);
         march.setProofGate(address(gate));
 
         vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(VERIFY_SELECTOR), abi.encode(true));
+        vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(VERIFY_BATCH_SELECTOR), abi.encode(true));
         // Default: "not stale" — latest attested height equals the block height most tests use.
         vm.mockCall(
             CHAIN_INFO_PRECOMPILE,
@@ -277,5 +282,185 @@ contract ProofGateTest is Test {
         (FactionMarch.Faction owner, uint256 garrison) = march.zones(GAME_ID, zoneId);
         assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha), "first-sent order (A) holds when also proven first");
         assertEq(garrison, 0, "tie: second mover (B) fails to flip it back");
+    }
+
+    // --- Phase 8: bounty ---
+
+    function test_fundBounties_increasesPool() public {
+        gate.fundBounties{value: 1 ether}();
+        assertEq(gate.bountyPool(), 1 ether);
+    }
+
+    function test_courier_paidBountyOnSuccess() public {
+        gate.fundBounties{value: 1 ether}();
+
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(9));
+        _mockTxIndex(root, 0);
+
+        address courier = makeAddr("courier");
+        uint256 before = courier.balance;
+
+        vm.prank(courier);
+        _submit(encodedTx, root, BLOCK_HEIGHT);
+
+        assertEq(courier.balance, before + BOUNTY_PER_ORDER);
+        assertEq(gate.bountyPool(), 1 ether - BOUNTY_PER_ORDER);
+    }
+
+    function test_soloPlay_commanderCouriersOwnOrderAndCollectsBounty() public {
+        gate.fundBounties{value: 1 ether}();
+
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(10));
+        _mockTxIndex(root, 0);
+
+        uint256 before = commander.balance;
+        vm.prank(commander);
+        _submit(encodedTx, root, BLOCK_HEIGHT);
+
+        assertEq(commander.balance, before + BOUNTY_PER_ORDER, "commander couriering their own order still gets paid");
+    }
+
+    function test_bountySkippedWhenPoolDry_orderStillResolves() public {
+        // No fundBounties() call — pool starts at 0.
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(11));
+        _mockTxIndex(root, 0);
+
+        address courier = makeAddr("courier");
+        uint256 before = courier.balance;
+
+        vm.expectEmit(true, true, true, true, address(gate));
+        emit ProofGate.BountySkipped(keccak256(abi.encode(BLOCK_HEIGHT, uint64(0), uint256(0))), BOUNTY_PER_ORDER, 0);
+
+        vm.prank(courier);
+        _submit(encodedTx, root, BLOCK_HEIGHT);
+
+        assertEq(courier.balance, before, "no bounty paid");
+        (FactionMarch.Faction owner, uint256 garrison) = march.zones(GAME_ID, 3);
+        assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha), "order still resolves with a dry pool");
+        assertEq(garrison, 50);
+    }
+
+    /// @notice Two independent courier processes race to submit the identical proof for the
+    /// same order. Exactly one is paid; the loser's transaction reverts entirely (no partial
+    /// state change, no partial bounty).
+    function test_twoCouriersRaceForSameBounty_exactlyOnePaid() public {
+        gate.fundBounties{value: 1 ether}();
+
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(12));
+        _mockTxIndex(root, 0);
+
+        address courierAlice = makeAddr("courierAlice");
+        address courierBob = makeAddr("courierBob");
+        uint256 aliceBefore = courierAlice.balance;
+        uint256 bobBefore = courierBob.balance;
+
+        vm.prank(courierAlice);
+        _submit(encodedTx, root, BLOCK_HEIGHT);
+
+        vm.prank(courierBob);
+        vm.expectRevert(
+            abi.encodeWithSelector(ProofGate.OrderAlreadyProcessed.selector, keccak256(abi.encode(BLOCK_HEIGHT, uint64(0), uint256(0))))
+        );
+        _submit(encodedTx, root, BLOCK_HEIGHT);
+
+        assertEq(courierAlice.balance, aliceBefore + BOUNTY_PER_ORDER, "winner is paid");
+        assertEq(courierBob.balance, bobBefore, "loser gets nothing - its whole tx reverted");
+    }
+
+    // --- Phase 8: batching ---
+
+    function _submitBatch(
+        uint64[] memory heights,
+        bytes[] memory encodedTxs,
+        bytes32[] memory roots
+    ) internal {
+        INativeQueryVerifier.MerkleProofEntry[][] memory siblingsPerOrder =
+            new INativeQueryVerifier.MerkleProofEntry[][](roots.length);
+        for (uint256 i = 0; i < roots.length; i++) {
+            siblingsPerOrder[i] = new INativeQueryVerifier.MerkleProofEntry[](0);
+        }
+        gate.submitOrderProofBatch(heights, encodedTxs, roots, siblingsPerOrder, bytes32(0), new bytes32[](0));
+    }
+
+    function test_batch_tenOrdersLandInOneTransaction() public {
+        gate.fundBounties{value: 1 ether}();
+
+        uint256 n = gate.MAX_BATCH_SIZE();
+        uint64[] memory heights = new uint64[](n);
+        bytes[] memory encodedTxs = new bytes[](n);
+        bytes32[] memory roots = new bytes32[](n);
+
+        for (uint256 i = 0; i < n; i++) {
+            heights[i] = BLOCK_HEIGHT + uint64(i);
+            roots[i] = bytes32(uint256(1000 + i));
+            _mockTxIndex(roots[i], uint64(i));
+            encodedTxs[i] =
+                _encodeTx(orderBook, _orderTopics(commander, GAME_ID, uint16(i)), abi.encode(uint32(1), uint64(i)), 1);
+        }
+
+        address courier = makeAddr("batchCourier");
+        uint256 before = courier.balance;
+
+        vm.prank(courier);
+        _submitBatch(heights, encodedTxs, roots);
+
+        assertEq(courier.balance, before + n * BOUNTY_PER_ORDER, "one bounty per order in the batch");
+        for (uint256 i = 0; i < n; i++) {
+            (FactionMarch.Faction owner,) = march.zones(GAME_ID, uint16(i));
+            assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha));
+        }
+    }
+
+    function test_revert_batch_tooLarge() public {
+        uint256 n = gate.MAX_BATCH_SIZE() + 1;
+        uint64[] memory heights = new uint64[](n);
+        bytes[] memory encodedTxs = new bytes[](n);
+        bytes32[] memory roots = new bytes32[](n);
+
+        vm.expectRevert(abi.encodeWithSelector(ProofGate.InvalidBatchSize.selector, n));
+        _submitBatch(heights, encodedTxs, roots);
+    }
+
+    function test_revert_batch_empty() public {
+        vm.expectRevert(abi.encodeWithSelector(ProofGate.InvalidBatchSize.selector, 0));
+        _submitBatch(new uint64[](0), new bytes[](0), new bytes32[](0));
+    }
+
+    function test_revert_batch_lengthMismatch() public {
+        uint64[] memory heights = new uint64[](2);
+        bytes[] memory encodedTxs = new bytes[](1); // mismatched on purpose
+        bytes32[] memory roots = new bytes32[](2);
+
+        vm.expectRevert(ProofGate.BatchLengthMismatch.selector);
+        _submitBatch(heights, encodedTxs, roots);
+    }
+
+    function test_batch_oneBadOrderRevertsWholeBatch() public {
+        // A batch is one transaction: if any order in it fails a check, the whole batch
+        // reverts, including the otherwise-valid orders alongside it.
+        uint64[] memory heights = new uint64[](2);
+        bytes[] memory encodedTxs = new bytes[](2);
+        bytes32[] memory roots = new bytes32[](2);
+
+        heights[0] = BLOCK_HEIGHT;
+        roots[0] = bytes32(uint256(2000));
+        _mockTxIndex(roots[0], 0);
+        encodedTxs[0] = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 5), abi.encode(uint32(1), uint64(0)), 1);
+
+        heights[1] = BLOCK_HEIGHT + 1;
+        roots[1] = bytes32(uint256(2001));
+        _mockTxIndex(roots[1], 1);
+        address attacker = makeAddr("attacker");
+        encodedTxs[1] = _encodeTx(attacker, _orderTopics(commander, GAME_ID, 6), abi.encode(uint32(1), uint64(1)), 1);
+
+        vm.expectRevert(ProofGate.ForgedEmitter.selector);
+        _submitBatch(heights, encodedTxs, roots);
+
+        (FactionMarch.Faction owner,) = march.zones(GAME_ID, 5);
+        assertEq(uint8(owner), uint8(FactionMarch.Faction.None), "the valid order in the same batch must not have applied either");
     }
 }
