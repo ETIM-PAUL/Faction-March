@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ProofGate, IChainInfo} from "../src/ProofGate.sol";
 import {FactionMarch} from "../src/FactionMarch.sol";
+import {WarChest} from "../src/WarChest.sol";
 import {EvmV1Decoder} from "@gluwa/asc-contracts/contracts/common/EvmV1Decoder.sol";
 import {INativeQueryVerifier} from "@gluwa/asc-contracts/contracts/write-ability/common/INativeQueryVerifier.sol";
 
@@ -33,6 +34,7 @@ contract ProofGateTest is Test {
 
     ProofGate gate;
     FactionMarch march;
+    WarChest chest;
     address orderBook;
     address commander;
     address otherCommander;
@@ -43,8 +45,10 @@ contract ProofGateTest is Test {
         otherCommander = makeAddr("otherCommander");
 
         march = new FactionMarch();
-        gate = new ProofGate(orderBook, address(march), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER);
+        chest = new WarChest(address(march), 5000);
+        gate = new ProofGate(orderBook, address(march), address(chest), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER);
         march.setProofGate(address(gate));
+        chest.setProofGate(address(gate));
 
         vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(VERIFY_SELECTOR), abi.encode(true));
         vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(VERIFY_BATCH_SELECTOR), abi.encode(true));

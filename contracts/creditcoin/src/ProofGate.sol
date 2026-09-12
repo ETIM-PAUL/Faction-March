@@ -5,6 +5,7 @@ import {INativeQueryVerifier, NativeQueryVerifierLib} from
     "@gluwa/asc-contracts/contracts/write-ability/common/INativeQueryVerifier.sol";
 import {EvmV1Decoder} from "@gluwa/asc-contracts/contracts/common/EvmV1Decoder.sol";
 import {FactionMarch} from "./FactionMarch.sol";
+import {WarChest} from "./WarChest.sol";
 
 /// @title IChainInfo
 /// @notice Minimal Solidity interface for the ChainInfo precompile at 0x...0fd3. Hand-written
@@ -75,6 +76,7 @@ contract ProofGate {
     INativeQueryVerifier public immutable VERIFIER;
     IChainInfo public immutable CHAIN_INFO;
     FactionMarch public immutable FACTION_MARCH;
+    WarChest public immutable WAR_CHEST;
 
     /// @notice The only contract ProofGate accepts OrderPlaced logs from.
     address public immutable ORDER_BOOK;
@@ -117,6 +119,7 @@ contract ProofGate {
     constructor(
         address orderBook,
         address factionMarch,
+        address warChest,
         uint64 sourceChainKey,
         uint64 stalenessWindowBlocks,
         uint256 bountyPerOrder
@@ -124,6 +127,7 @@ contract ProofGate {
         VERIFIER = NativeQueryVerifierLib.getVerifier();
         CHAIN_INFO = IChainInfo(CHAIN_INFO_PRECOMPILE);
         FACTION_MARCH = FactionMarch(factionMarch);
+        WAR_CHEST = WarChest(warChest);
         ORDER_BOOK = orderBook;
         SOURCE_CHAIN_KEY = sourceChainKey;
         STALENESS_WINDOW_BLOCKS = stalenessWindowBlocks;
@@ -236,21 +240,26 @@ contract ProofGate {
         // Same-tx verify-and-execute: combat resolves in this transaction, not a later one.
         FACTION_MARCH.resolveOrder(gameId, commander, zoneId, units);
 
-        _payBounty(orderKey);
+        bool bountyPaid = _payBounty(orderKey);
+
+        // Same-tx reputation recording — the only authentic (non-self-reported) source for
+        // WarChest's ordersProven/bountiesClaimed counters.
+        WAR_CHEST.recordOrderResolution(gameId, commander, msg.sender, nonce, bountyPaid);
     }
 
     /// @dev Never lets a dry pool block order resolution — the courier just goes unpaid.
-    function _payBounty(bytes32 orderKey) internal {
+    function _payBounty(bytes32 orderKey) internal returns (bool paid) {
         uint256 amount = BOUNTY_PER_ORDER;
-        if (amount == 0) return;
+        if (amount == 0) return false;
         if (amount > bountyPool) {
             emit BountySkipped(orderKey, amount, bountyPool);
-            return;
+            return false;
         }
         bountyPool -= amount;
         (bool ok,) = msg.sender.call{value: amount}("");
         if (!ok) revert BountyTransferFailed();
         emit BountyPaid(msg.sender, orderKey, amount);
+        return true;
     }
 
     /// @dev Checks 1-3. Scans logs for the first one emitted by ORDER_BOOK; once found, that

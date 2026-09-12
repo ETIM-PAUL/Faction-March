@@ -5,7 +5,7 @@ effect once someone proves them to Creditcoin. See
 [`faction-march-build-plan.md`](./faction-march-build-plan.md) for the full
 design and phase-by-phase build plan.
 
-**Status: Phases 1-8 done.** Real send/attest/prove/verify round trip
+**Status: Phases 1-9 done.** Real send/attest/prove/verify round trip
 measured at ~8.9 min (Phase 1). Both networks build, test, and deploy
 cleanly (Phase 2). `OrderBook.sol` verified on Sepolia (Phase 3). Full
 place→attest→prove→relay slice runs end to end via one courier command
@@ -21,17 +21,23 @@ wiring step, with an integration test proving competing orders resolve in
 now a permissionless, bountied job — a fixed CTC bounty per order, a batch
 entry point handling up to 10 proofs sharing one continuity proof, and a
 test proving two couriers racing for the same order pays exactly one of
-them (Phase 8). See [`spikes/FINDINGS.md`](./spikes/FINDINGS.md) for details.
+them (Phase 8). `WarChest.sol` — an undercollateralised credit line backed
+by proven territory: borrow against zones held, default when the repayment
+window passes, a permanent penalty that survives clearing, and an on-chain
+commander reputation record fed authentically from `ProofGate` in the same
+transaction as every resolved order (Phase 9). See
+[`spikes/FINDINGS.md`](./spikes/FINDINGS.md) for details.
 
 ## Deployed contracts
 
 | Contract | Network | Address |
 |---|---|---|
 | `OrderBook` | Sepolia | [`0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F`](https://sepolia.etherscan.io/address/0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F#code) — verified, orderFee 0.0005 ETH, treasury `0x9d4eF81F5225107049ba08F69F598D97B31ea644` |
-| `FactionMarch` | Creditcoin CC3 | `0x92b474811aC11EbfFdcc21fc240993b46909ae69` — game board, `resolveOrder` restricted to `ProofGate` below |
-| `ProofGate` | Creditcoin CC3 | `0x1BDA513AC071A6736Bb5569499CE9a7D96c3E0bc` — hardened, wired to `FactionMarch` above, allowlists `OrderBook` above, staleness window 1200 blocks, bounty 0.0001 CTC/order, bounty pool funded with 0.01 CTC (100 orders' worth) |
+| `FactionMarch` | Creditcoin CC3 | `0xEf7Cc55BD1bF5c836D4CcD0c3d108415a6Bc18Ba` — game board, `resolveOrder` restricted to `ProofGate` below |
+| `WarChest` | Creditcoin CC3 | `0x54C3901F43d1ab2694357D304e6dAc1671Cf10a2` — credit line + reputation, reads territory from `FactionMarch` above, repayment window 50 blocks (demo-scale — production default is 5000) |
+| `ProofGate` | Creditcoin CC3 | `0xcEd503d0Eeb04C13F8974CaA85d06A22f0441C88` — hardened, wired to `FactionMarch` and `WarChest` above, allowlists `OrderBook` above, staleness window 1200 blocks, bounty 0.0001 CTC/order, bounty pool funded with 0.01 CTC |
 
-Superseded addresses, kept only as a record of what each phase demonstrated (see `spikes/FINDINGS.md`): `ProofGate` Phase 4 (unguarded, no emitter check) `0x296Ecf33a2c64F7A858133E60aC5d732Cd1b654c`; `ProofGate` Phase 5 (hardened, before FactionMarch wiring) `0x9fe147c23600CFcB7dd0DAEc4670d96868142744`; `FactionMarch` Phase 6 (no access control) `0x871F283Cf322F0206FE6424EE01529E186270eb5`; `ProofGate`/`FactionMarch` Phase 7 (wired, no bounty/batching) `0x0739BA644E4a25e529B04b870b54958c4C25131d` / `0x3181cFd3D6927656797208C20848c2B623bbf223`.
+Superseded addresses, kept only as a record of what each phase demonstrated (see `spikes/FINDINGS.md`): `ProofGate` Phase 4 (unguarded, no emitter check) `0x296Ecf33a2c64F7A858133E60aC5d732Cd1b654c`; `ProofGate` Phase 5 (hardened, before FactionMarch wiring) `0x9fe147c23600CFcB7dd0DAEc4670d96868142744`; `FactionMarch` Phase 6 (no access control) `0x871F283Cf322F0206FE6424EE01529E186270eb5`; `ProofGate`/`FactionMarch` Phase 7 (wired, no bounty/batching) `0x0739BA644E4a25e529B04b870b54958c4C25131d` / `0x3181cFd3D6927656797208C20848c2B623bbf223`; `ProofGate`/`FactionMarch` Phase 8 (bounty/batching, no WarChest) `0x1BDA513AC071A6736Bb5569499CE9a7D96c3E0bc` / `0x92b474811aC11EbfFdcc21fc240993b46909ae69`.
 
 ## Networks
 
@@ -52,7 +58,7 @@ simulation fail with `header validation error: prevrandao not set`.
 | Path | What |
 |---|---|
 | `contracts/source/` | Foundry project for Ethereum Sepolia (`OrderBook.sol`, Phase 3) |
-| `contracts/creditcoin/` | Foundry project for Creditcoin CC3 (`ProofGate.sol` hardened, `FactionMarch.sol` done; `WarChest.sol` upcoming) |
+| `contracts/creditcoin/` | Foundry project for Creditcoin CC3 (`ProofGate.sol`, `FactionMarch.sol`, `WarChest.sol` all done) |
 | `courier/` | Node/TS proof-delivery scripts — `place-and-relay.ts` is the reference courier |
 | `web/` | Frontend (Phase 10) |
 | `spikes/` | Phase 1 feasibility scripts and findings |
