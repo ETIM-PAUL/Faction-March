@@ -5,7 +5,7 @@ effect once someone proves them to Creditcoin. See
 [`faction-march-build-plan.md`](./faction-march-build-plan.md) for the full
 design and phase-by-phase build plan.
 
-**Status: Phases 1-9 done.** Real send/attest/prove/verify round trip
+**Status: Phases 1-10 done.** Real send/attest/prove/verify round trip
 measured at ~8.9 min (Phase 1). Both networks build, test, and deploy
 cleanly (Phase 2). `OrderBook.sol` verified on Sepolia (Phase 3). Full
 place→attest→prove→relay slice runs end to end via one courier command
@@ -25,8 +25,14 @@ them (Phase 8). `WarChest.sol` — an undercollateralised credit line backed
 by proven territory: borrow against zones held, default when the repayment
 window passes, a permanent penalty that survives clearing, and an on-chain
 commander reputation record fed authentically from `ProofGate` in the same
-transaction as every resolved order (Phase 9). See
-[`spikes/FINDINGS.md`](./spikes/FINDINGS.md) for details.
+transaction as every resolved order (Phase 9). A browser frontend — zone
+map with ownership history, an order composer, an in-flight panel with a
+live ticking clock (never implying instant resolution), a permissionless
+courier board, and a war chest/credit panel — reads every screen live from
+the deployed contracts with no backend of its own, and can place orders,
+join games, and submit proofs from a connected wallet with no terminal
+required (Phase 10). See [`spikes/FINDINGS.md`](./spikes/FINDINGS.md) for
+details.
 
 ## Deployed contracts
 
@@ -60,7 +66,7 @@ simulation fail with `header validation error: prevrandao not set`.
 | `contracts/source/` | Foundry project for Ethereum Sepolia (`OrderBook.sol`, Phase 3) |
 | `contracts/creditcoin/` | Foundry project for Creditcoin CC3 (`ProofGate.sol`, `FactionMarch.sol`, `WarChest.sol` all done) |
 | `courier/` | Node/TS proof-delivery scripts — `place-and-relay.ts` is the reference courier |
-| `web/` | Frontend (Phase 10) |
+| `web/` | React + Vite frontend (Phase 10) — no backend, reads/writes contracts directly from the browser |
 | `spikes/` | Phase 1 feasibility scripts and findings |
 
 ## Setup
@@ -99,4 +105,16 @@ Batch courier — places up to 10 orders back to back, waits once, and lands all
 
 ```sh
 npm run courier:batch-relay -- <count> [gameId]
+```
+
+Frontend — zone map, order composer, in-flight panel, courier board, and war chest, all reading the deployed contracts live (no `.env` needed; addresses/RPCs are public and hardcoded in `web/src/config.ts`):
+
+```sh
+npm run web:dev     # opens on http://localhost:5173
+```
+
+Needs an injected wallet (MetaMask or similar) added to both Sepolia and Creditcoin CC3 to place orders, join games, or submit proofs — the read-only screens (zone map, war chest, in-flight/resolved orders) work without connecting anything. If contracts are redeployed, re-extract the ABIs the frontend imports:
+
+```sh
+node -e "const fs=require('fs');for(const [n,p] of Object.entries({OrderBook:'contracts/source/out/OrderBook.sol/OrderBook.json',FactionMarch:'contracts/creditcoin/out/FactionMarch.sol/FactionMarch.json',ProofGate:'contracts/creditcoin/out/ProofGate.sol/ProofGate.json',WarChest:'contracts/creditcoin/out/WarChest.sol/WarChest.json'})){fs.writeFileSync('web/src/abis/'+n+'.json',JSON.stringify(JSON.parse(fs.readFileSync(p)).abi,null,2))}"
 ```

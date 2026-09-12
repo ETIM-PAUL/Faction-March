@@ -9,6 +9,8 @@
     "spike:full": "tsx spikes/02-full-attestation-spike.ts",
     "courier:place-and-relay": "tsx courier/src/place-and-relay.ts",
     "courier:batch-relay": "tsx courier/src/batch-relay.ts",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
     "typecheck": "tsc --noEmit",
     "build:contracts": "forge build --root contracts/source && forge build --root contracts/creditcoin",
     "test:contracts": "forge test --root contracts/source && forge test --root contracts/creditcoin",
