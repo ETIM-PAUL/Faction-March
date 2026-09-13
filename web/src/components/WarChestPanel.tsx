@@ -5,6 +5,7 @@ import type { GameData } from '../hooks/useGameData';
 import { warChestContract } from '../lib/contracts';
 import { CREDITCOIN_CHAIN_ID } from '../config';
 import { factionColor, factionName, formatCtc } from '../lib/format';
+import { describeError } from '../lib/errors';
 
 export function WarChestPanel({
   wallet,
@@ -31,7 +32,7 @@ export function WarChestPanel({
       const signer = await wallet.getSigner();
       await action(warChestContract(signer));
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
+      setStatus(describeError(err));
     } finally {
       setBusy(false);
     }
@@ -72,6 +73,11 @@ export function WarChestPanel({
         <h2>War chest</h2>
         <span className="panel-eyebrow mono">{formatCtc(game.chestBalance)} CTC on hand</span>
       </div>
+      <p className="muted">
+        Territory (zones a faction currently owns) drives everything below: <strong>Discount</strong> rises in tiers
+        at 3/6/9 zones held; <strong>Credit limit</strong> scales directly with zones held (more territory, more you
+        can borrow against it) and gets a permanent penalty per past default, even after it's repaid.
+      </p>
       <div className="table-scroll">
         <table className="data-table">
           <thead>

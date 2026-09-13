@@ -21,21 +21,29 @@ export default function App() {
   const orders = useOrders(gameId);
 
   useEffect(() => {
-    let cancelled = false;
     if (gameId === null || !wallet.address) {
       setMyFaction(null);
       return;
     }
-    factionMarchContract(creditcoinReadProvider)
-      .commanderFaction(gameId, wallet.address)
-      .then((f: bigint) => {
-        if (!cancelled) setMyFaction(Number(f));
-      })
-      .catch(() => {
-        if (!cancelled) setMyFaction(null);
-      });
+    let cancelled = false;
+    function poll() {
+      factionMarchContract(creditcoinReadProvider)
+        .commanderFaction(gameId, wallet.address)
+        .then((f: bigint) => {
+          if (!cancelled) setMyFaction(Number(f));
+        })
+        .catch(() => {
+          if (!cancelled) setMyFaction(null);
+        });
+    }
+    // Polled, not one-shot: a successful `join()` changes this on-chain without changing
+    // gameId or wallet.address, so a one-shot fetch tied only to those would never notice
+    // and the "You are <faction>" pill would stay stale until something else re-triggered it.
+    poll();
+    const id = setInterval(poll, 5000);
     return () => {
       cancelled = true;
+      clearInterval(id);
     };
   }, [gameId, wallet.address]);
 
@@ -43,12 +51,12 @@ export default function App() {
     <div className="app">
       <WalletBar wallet={wallet} />
       <main>
-        <GameSelector wallet={wallet} gameId={gameId} setGameId={setGameId} myFaction={myFaction} />
+        <GameSelector wallet={wallet} gameId={gameId} setGameId={setGameId} myFaction={myFaction} game={game} />
         <ZoneMap gameId={gameId} game={game} />
         <InFlightPanel orders={orders} />
         <div className="deck">
-          <OrderComposer wallet={wallet} gameId={gameId} />
-          <CourierBoard wallet={wallet} orders={orders} />
+          <OrderComposer wallet={wallet} gameId={gameId} game={game} />
+          <CourierBoard wallet={wallet} orders={orders} game={game} />
         </div>
         <WarChestPanel wallet={wallet} gameId={gameId} game={game} myFaction={myFaction} />
       </main>

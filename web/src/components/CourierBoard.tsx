@@ -1,14 +1,24 @@
 import { useEffect, useState } from 'react';
 import type { useWallet } from '../hooks/useWallet';
 import type { TrackedOrder } from '../hooks/useOrders';
+import type { GameData } from '../hooks/useGameData';
 import { getAttestedHeight, getProofForTx } from '../lib/proofBuilder';
 import { proofGateContract } from '../lib/contracts';
 import { CREDITCOIN_CHAIN_ID } from '../config';
 import { shortAddress } from '../lib/format';
+import { describeError } from '../lib/errors';
 
 const BATCH_RANGE_BLOCKS = 1000; // matches the precompile's MAX_BATCH_RANGE
 
-export function CourierBoard({ wallet, orders }: { wallet: ReturnType<typeof useWallet>; orders: TrackedOrder[] }) {
+export function CourierBoard({
+  wallet,
+  orders,
+  game,
+}: {
+  wallet: ReturnType<typeof useWallet>;
+  orders: TrackedOrder[];
+  game: GameData;
+}) {
   const [attestedHeight, setAttestedHeight] = useState<number | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [statusByKey, setStatusByKey] = useState<Record<string, string>>({});
@@ -54,7 +64,7 @@ export function CourierBoard({ wallet, orders }: { wallet: ReturnType<typeof use
       await tx.wait();
       setStatusByKey((s) => ({ ...s, [order.key]: 'Resolved — bounty paid if the pool had funds.' }));
     } catch (err) {
-      setStatusByKey((s) => ({ ...s, [order.key]: err instanceof Error ? err.message : String(err) }));
+      setStatusByKey((s) => ({ ...s, [order.key]: describeError(err) }));
     } finally {
       setBusyKey(null);
     }
@@ -83,27 +93,36 @@ export function CourierBoard({ wallet, orders }: { wallet: ReturnType<typeof use
             <tbody>
               {pending.map((o) => {
                 const attested = attestedHeight !== null && attestedHeight >= o.sepoliaBlock;
+                // A zone that didn't exist in this game when the order was sent (e.g. the
+                // sender typed a zone past the board's edge) can never resolve --
+                // FactionMarch.resolveOrder will always revert with InvalidZone. Flag it
+                // instead of letting a courier burn real gas on a doomed transaction.
+                const invalidZone = game.zoneCount > 0 && o.zoneId >= game.zoneCount;
                 const batchable = pending.filter(
                   (other) => other.key !== o.key && Math.abs(other.sepoliaBlock - o.sepoliaBlock) <= BATCH_RANGE_BLOCKS
                 ).length;
                 return (
-                  <tr key={o.key}>
+                  <tr key={o.key} style={{ opacity: invalidZone ? 0.5 : 1 }}>
                     <td className="mono">{shortAddress(o.commander)}</td>
                     <td className="num">{o.zoneId}</td>
                     <td className="num">{o.sepoliaBlock}</td>
                     <td>
-                      {attested ? (
+                      {invalidZone ? (
+                        <span className="pill error">
+                          zone {o.zoneId} doesn't exist (0–{game.zoneCount - 1}) — will always revert
+                        </span>
+                      ) : attested ? (
                         <span className="pill attested">attested</span>
                       ) : (
                         <span className="pill waiting">waiting for attestation</span>
                       )}
-                      {batchable > 0 && (
+                      {!invalidZone && batchable > 0 && (
                         <span className="muted"> · batchable with {batchable} other{batchable === 1 ? '' : 's'} (CLI: courier:batch-relay)</span>
                       )}
                       {statusByKey[o.key] && <div className="muted">{statusByKey[o.key]}</div>}
                     </td>
                     <td>
-                      <button onClick={() => claim(o)} disabled={!attested || busyKey === o.key || !wallet.address}>
+                      <button onClick={() => claim(o)} disabled={invalidZone || !attested || busyKey === o.key || !wallet.address}>
                         {busyKey === o.key ? 'Working…' : 'Submit proof'}
                       </button>
                     </td>
