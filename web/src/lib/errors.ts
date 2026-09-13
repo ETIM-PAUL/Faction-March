@@ -46,7 +46,7 @@ function friendlyMessage(name: string, args: ReadonlyArray<unknown>): string | n
     case 'AlreadyJoined':
       return `You've already joined this game.`;
     case 'GameNotActive':
-      return `Game ${a[0]} isn't active right now — it's either still open for joining, or already settled.`;
+      return `Game ${a[0]} isn't active (still open, or already settled).`;
     case 'InvalidZone':
       return `Zone ${a[0]} doesn't exist in this game — valid zones are 0–${Number(a[1]) - 1}.`;
     case 'InvalidZoneCount':
@@ -72,6 +72,14 @@ function friendlyMessage(name: string, args: ReadonlyArray<unknown>): string | n
       return `This order is too old to prove now (its block is too far behind the latest attested height) — it expired safely, no game state was affected.`;
     case 'TransactionDidNotSucceed':
       return `The original Sepolia transaction reverted, so there's nothing valid to prove.`;
+    case 'ProofVerificationFailed':
+      return `The block-prover precompile rejected this proof — it doesn't chain back to an attested Creditcoin checkpoint.`;
+    case 'BountyTransferFailed':
+      return `The order resolved, but paying out the bounty failed (the recipient may be a contract that rejects plain transfers).`;
+    case 'InvalidBatchSize':
+      return `Got ${a[0]} orders, but a batch must contain between 1 and 10 (ProofGate.MAX_BATCH_SIZE).`;
+    case 'BatchLengthMismatch':
+      return `Batch arrays are out of sync with each other — this is a client bug, not something you did wrong.`;
     case 'NotFactionMember':
       return `Only members of that faction can act on its credit line.`;
     case 'CreditLineInDefault':

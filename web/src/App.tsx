@@ -55,8 +55,8 @@ export default function App() {
         <ZoneMap gameId={gameId} game={game} />
         <InFlightPanel orders={orders} />
         <div className="deck">
-          <OrderComposer wallet={wallet} gameId={gameId} game={game} />
-          <CourierBoard wallet={wallet} orders={orders} game={game} />
+          <OrderComposer wallet={wallet} gameId={gameId} game={game} myFaction={myFaction} />
+          <CourierBoard wallet={wallet} orders={orders} game={game} gameId={gameId} />
         </div>
         <WarChestPanel wallet={wallet} gameId={gameId} game={game} myFaction={myFaction} />
       </main>

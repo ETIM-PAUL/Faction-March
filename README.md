@@ -1,11 +1,24 @@
 # Faction March
 
+**Track:** Gaming — a territory war with permanent, provably-resolved
+captures. Also demonstrates the DeFi track: `WarChest.sol` is an
+undercollateralised credit line backed by proven territory. Built for
+**BUIDL CTC 2026 Fall**, themed on the Attestcoin Protocol (formerly USC).
+
+- **Demo video:** TODO — add before the submission deadline.
+- **Deck / whitepaper:** TODO — add before the submission deadline.
+
 An Attestcoin-secured territory war: orders are Sepolia transactions, and
 they only take effect once someone proves them to Creditcoin CC3. This
 README leads with that integration — what it proves, how it's hardened,
 and how it resolves in the same transaction it verifies — before getting to
 the game itself. See [`spikes/FINDINGS.md`](./spikes/FINDINGS.md) for the
 feasibility research and [`SECURITY.md`](./SECURITY.md) for the self-audit.
+
+**Originality note.** The faction/zone/war-chest skeleton is a new codebase: proof-arrival resolution — `OrderBook.sol`, `ProofGate.sol`,
+`FactionMarch.sol`'s Attestcoin wiring, and `WarChest.sol` are all written
+fresh for BUIDL CTC 2026 Fall, and are the actual subject of this
+submission.
 
 ---
 
@@ -99,7 +112,13 @@ see [`SECURITY.md`](./SECURITY.md#gas-profile-the-batch-path-at-10-queries)).
 A single bad order reverts the whole batch by design, so a courier is
 incentivized to only bundle orders it's already confident are valid. Two
 independent courier processes racing for the same bounty pay out to exactly
-one of them — the other's transaction reverts.
+one of them — the other's transaction reverts. Batching isn't CLI-only: the
+courier board in `web/` lets anyone tick multiple attested, valid orders and
+submit them as one batch straight from the browser (`ProofGate.submitOrderProofBatch`,
+same call the CLI makes), fetching the shared continuity proof from the same
+prover REST endpoint the CLI uses (`POST /api/v1/proof-batch-by-tx`), called
+directly rather than through `@gluwa/usc-sdk` for the same browser-bundle
+reason as single-order proofs (see *Frontend*, below).
 
 ---
 
@@ -116,16 +135,29 @@ not stored, so no transaction is ever needed to "advance" it.
 
 Order fees accrue to a per-game war chest, split across factions by
 territory held. A faction can borrow against proven territory —
-`WarChest.sol` — to fund an offensive beyond its chest balance; the limit
-shrinks on default and every resolved order writes to an on-chain commander
-reputation record (orders issued, proven, bounties claimed, debts repaid).
-This is the credit thesis: an undercollateralised credit primitive that's
-played, not pitched, on a credit chain.
+`WarChest.sol` — to fund an offensive beyond its chest balance, with no
+separate collateral posted: territory read live from `FactionMarch` *is*
+the collateral. A draw must be repaid within `REPAYMENT_WINDOW_BLOCKS`
+(5000 blocks on the current deployment) of being taken, or the line
+defaults automatically — computed from the block number like everything
+else here, no transaction required to trigger it. Defaulting zeroes the
+credit limit immediately, and even after it's repaid and cleared, permanently
+cuts the faction's multiplier by 30% *per lifetime default* — it does not
+reset. Every resolved order also writes to an on-chain commander reputation
+record (orders issued, proven, bounties claimed, debts repaid). This is the
+credit thesis: an undercollateralised credit primitive that's played, not
+pitched, on a credit chain.
 
 The frontend (`web/`) is a zone map with ownership history, an order
-composer, a courier board, a war chest/credit panel, and — the single most
-important screen — an in-flight panel with a live ticking clock, so the
-UI never implies instant resolution.
+composer, a paginated courier board (single-order *and* in-browser batch
+submission — see *Batching*, above) that flags doomed proofs before anyone
+wastes real gas on them — an out-of-range zone or, just as fatal, a
+commander who never joined the game (`resolveOrder` reverts with
+`NotJoined` either way) — a war chest/credit panel showing each faction's
+live due-block countdown and default consequences, a connected wallet's own
+on-chain reputation pulled straight from `WarChest.reputations`, and — the
+single most important screen — an in-flight panel with a live ticking clock,
+so the UI never implies instant resolution.
 
 ---
 

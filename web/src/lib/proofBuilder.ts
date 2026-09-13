@@ -51,3 +51,49 @@ export async function getProofForTx(txHash: string): Promise<ProofByTx> {
   }
   return (await res.json()) as ProofByTx;
 }
+
+export interface BatchProofResult {
+  // Flattened, index-aligned across all four arrays -- exactly the shape
+  // ProofGate.submitOrderProofBatch expects, one entry per proven order.
+  heights: number[];
+  encodedTxs: string[];
+  merkleRoots: string[];
+  siblingsPerOrder: MerkleProofEntry[][];
+  continuityProof: ContinuityProof;
+}
+
+/** Same REST endpoint the courier CLI's @gluwa/usc-sdk client calls
+ * (`POST /api/v1/proof-batch-by-tx/{chainKey}`), called directly here for the same reason
+ * getProofForTx() is a plain fetch() rather than the SDK: it's Node-oriented and not a good
+ * fit for a browser bundle, but the underlying HTTP API is simple and CORS-open. */
+export async function getBatchProof(txHashes: string[]): Promise<BatchProofResult> {
+  const res = await fetch(`${PROOF_BUILDER_URL}/api/v1/proof-batch-by-tx/${SOURCE_CHAIN_KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(txHashes),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`proof-batch-by-tx request failed: HTTP ${res.status} ${text}`);
+  }
+  const body = (await res.json()) as {
+    continuityProof: ContinuityProof;
+    merkleProofs: Record<string, Record<string, { txHash: string; txBytes: string; merkleProof: MerkleProof }>>;
+  };
+
+  const heights: number[] = [];
+  const encodedTxs: string[] = [];
+  const merkleRoots: string[] = [];
+  const siblingsPerOrder: MerkleProofEntry[][] = [];
+
+  for (const [headerNumber, byIndex] of Object.entries(body.merkleProofs)) {
+    for (const entry of Object.values(byIndex)) {
+      heights.push(Number(headerNumber));
+      encodedTxs.push(entry.txBytes);
+      merkleRoots.push(entry.merkleProof.root);
+      siblingsPerOrder.push(entry.merkleProof.siblings);
+    }
+  }
+
+  return { heights, encodedTxs, merkleRoots, siblingsPerOrder, continuityProof: body.continuityProof };
+}

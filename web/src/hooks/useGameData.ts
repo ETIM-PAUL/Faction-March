@@ -32,6 +32,7 @@ export interface GameData {
   zones: ZoneInfo[];
   factions: FactionStat[];
   chestBalance: bigint;
+  ccBlockNumber: number;
   loading: boolean;
   error: string | null;
 }
@@ -45,6 +46,7 @@ const EMPTY: GameData = {
   zones: [],
   factions: [],
   chestBalance: 0n,
+  ccBlockNumber: 0,
   loading: true,
   error: null,
 };
@@ -115,6 +117,7 @@ export function useGameData(gameId: bigint | null, intervalMs = 5000): GameData 
         }
 
         const chestBalance: bigint = await chest.chestBalance(gameId);
+        const ccBlockNumber = await creditcoinReadProvider.getBlockNumber();
 
         if (!cancelled) {
           setData({
@@ -126,6 +129,7 @@ export function useGameData(gameId: bigint | null, intervalMs = 5000): GameData 
             zones,
             factions,
             chestBalance,
+            ccBlockNumber,
             loading: false,
             error: null,
           });
