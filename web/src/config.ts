@@ -14,9 +14,9 @@ export const PROOF_BUILDER_URL = 'https://prover.cc3-testnet.creditcoin.network'
 
 export const ADDRESSES = {
   orderBook: '0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F',
-  factionMarch: '0xB8Fde830fF968E56528539505243da22ce59b628',
-  proofGate: '0x58ef7793d058d7F2e11DCe57747bEf6D1d487778',
-  warChest: '0xF1eD07B6A8406E2b0B7D8FE072C64740aCdf24C4',
+  factionMarch: '0xE3c75BD8B7029175f909141ffD2639D8478C9ea4',
+  proofGate: '0x5F979DaafCc5D3324Ea446e9DcEa829aCe4aE0e1',
+  warChest: '0xc15b39Ecd7068B2a2409f5833389Dd4c7E34B080',
 } as const;
 
 export const SEPOLIA_NETWORK_PARAMS = {

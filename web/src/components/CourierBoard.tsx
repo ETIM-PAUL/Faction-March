@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import type { useWallet } from '../hooks/useWallet';
 import type { TrackedOrder } from '../hooks/useOrders';
 import type { GameData } from '../hooks/useGameData';
+import { useDoomedOrders } from '../hooks/useDoomedOrders';
 import { getAttestedHeight, getBatchProof, getProofForTx } from '../lib/proofBuilder';
-import { proofGateContract, factionMarchContract } from '../lib/contracts';
-import { creditcoinReadProvider } from '../lib/providers';
+import { proofGateContract } from '../lib/contracts';
 import { CREDITCOIN_CHAIN_ID } from '../config';
 import { shortAddress } from '../lib/format';
 import { describeError } from '../lib/errors';
@@ -31,7 +31,6 @@ export function CourierBoard({
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchStatus, setBatchStatus] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const [joined, setJoined] = useState<Record<string, boolean>>({}); // lowercased commander -> has a faction
 
   const pending = orders.filter((o) => !o.resolved);
   const pageCount = Math.max(1, Math.ceil(pending.length / PAGE_SIZE));
@@ -39,6 +38,7 @@ export function CourierBoard({
   // just because a page at the end emptied out (e.g. its last order got resolved).
   const clampedPage = Math.min(page, pageCount - 1);
   const pageItems = pending.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
+  const doomed = useDoomedOrders(pending, game, gameId);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,40 +57,6 @@ export function CourierBoard({
       clearInterval(id);
     };
   }, []);
-
-  // A proof for a commander who never joined this game can never resolve --
-  // FactionMarch.resolveOrder always reverts with NotJoined. Same idea as the invalid-zone
-  // check below: flag it instead of letting a courier burn real gas finding out the hard
-  // way. One call per distinct commander among pending orders, not per order.
-  useEffect(() => {
-    if (gameId === null) {
-      setJoined({});
-      return;
-    }
-    let cancelled = false;
-    async function poll() {
-      const commanders = Array.from(new Set(pending.map((o) => o.commander.toLowerCase())));
-      const march = factionMarchContract(creditcoinReadProvider);
-      const results = await Promise.all(
-        commanders.map(async (c) => {
-          try {
-            const faction: bigint = await march.commanderFaction(gameId, c);
-            return [c, faction !== 0n] as const;
-          } catch {
-            return [c, true] as const; // unknown -- don't block on a failed read
-          }
-        })
-      );
-      if (!cancelled) setJoined(Object.fromEntries(results));
-    }
-    poll();
-    const id = setInterval(poll, 10000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameId, pending.map((o) => o.commander).join(',')]);
 
   async function claim(order: TrackedOrder) {
     setBusyKey(order.key);
@@ -185,19 +151,14 @@ export function CourierBoard({
             <tbody>
               {pageItems.map((o) => {
                 const attested = attestedHeight !== null && attestedHeight >= o.sepoliaBlock;
-                // A zone that didn't exist in this game when the order was sent (e.g. the
-                // sender typed a zone past the board's edge) can never resolve --
-                // FactionMarch.resolveOrder will always revert with InvalidZone. Flag it
-                // instead of letting a courier burn real gas on a doomed transaction.
-                const invalidZone = game.zoneCount > 0 && o.zoneId >= game.zoneCount;
-                const notJoined = joined[o.commander.toLowerCase()] === false;
-                const doomed = invalidZone || notJoined;
-                const eligibleForBatch = attested && !doomed;
+                const doomReason = doomed[o.key];
+                const isDoomed = doomReason !== null && doomReason !== undefined;
+                const eligibleForBatch = attested && !isDoomed;
                 const batchable = pending.filter(
                   (other) => other.key !== o.key && Math.abs(other.sepoliaBlock - o.sepoliaBlock) <= BATCH_RANGE_BLOCKS
                 ).length;
                 return (
-                  <tr key={o.key} style={{ opacity: doomed ? 0.5 : 1 }}>
+                  <tr key={o.key} style={{ opacity: isDoomed ? 0.5 : 1 }}>
                     <td>
                       <input
                         type="checkbox"
@@ -211,18 +172,18 @@ export function CourierBoard({
                     <td className="num">{o.zoneId}</td>
                     <td className="num">{o.sepoliaBlock}</td>
                     <td>
-                      {invalidZone ? (
+                      {doomReason === 'invalid-zone' ? (
                         <span className="pill error">
                           zone {o.zoneId} doesn't exist (0–{game.zoneCount - 1}) — will always revert
                         </span>
-                      ) : notJoined ? (
+                      ) : doomReason === 'not-joined' ? (
                         <span className="pill error">commander never joined — will always revert</span>
                       ) : attested ? (
                         <span className="pill attested">attested</span>
                       ) : (
                         <span className="pill waiting">waiting for attestation</span>
                       )}
-                      {!doomed && batchable > 0 && (
+                      {!isDoomed && batchable > 0 && (
                         <span className="muted" title="Select the checkboxes below and submit together in one batch">
                           {' '}
                           · batchable ×{batchable}
@@ -231,7 +192,7 @@ export function CourierBoard({
                       {statusByKey[o.key] && <div className="muted">{statusByKey[o.key]}</div>}
                     </td>
                     <td>
-                      <button onClick={() => claim(o)} disabled={doomed || !attested || busyKey === o.key || !wallet.address}>
+                      <button onClick={() => claim(o)} disabled={isDoomed || !attested || busyKey === o.key || !wallet.address}>
                         {busyKey === o.key ? 'Working…' : 'Submit proof'}
                       </button>
                     </td>

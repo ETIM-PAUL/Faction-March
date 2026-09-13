@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react';
 import type { TrackedOrder } from '../hooks/useOrders';
+import type { GameData } from '../hooks/useGameData';
+import { useDoomedOrders } from '../hooks/useDoomedOrders';
 import { TYPICAL_MARCH_TIME_MS } from '../config';
 import { formatElapsed, shortAddress } from '../lib/format';
 
 /** Orders sent but not yet proven, ticking in real time, so the UI never implies instant
- * resolution — march time is the feature, and this is where it's shown. */
-export function InFlightPanel({ orders }: { orders: TrackedOrder[] }) {
+ * resolution — march time is the feature, and this is where it's shown. An order that can
+ * never resolve (bad zone, or a commander who never joined before the game left OPEN) is
+ * flagged as stuck rather than left ticking under "running long" forever, which would
+ * otherwise look identical to an order that's merely taking a while. */
+export function InFlightPanel({ orders, game, gameId }: { orders: TrackedOrder[]; game: GameData; gameId: bigint | null }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -14,6 +19,7 @@ export function InFlightPanel({ orders }: { orders: TrackedOrder[] }) {
 
   const pending = orders.filter((o) => !o.resolved);
   const resolved = orders.filter((o) => o.resolved).slice(0, 8);
+  const doomed = useDoomedOrders(pending, game, gameId);
 
   return (
     <div className="wire-panel">
@@ -39,15 +45,32 @@ export function InFlightPanel({ orders }: { orders: TrackedOrder[] }) {
               {pending.map((o) => {
                 const elapsedMs = o.sentAtMs > 0 ? now - o.sentAtMs : 0;
                 const pastTypical = elapsedMs > TYPICAL_MARCH_TIME_MS;
+                const doomReason = doomed[o.key];
+                const isDoomed = doomReason !== null && doomReason !== undefined;
                 return (
-                  <tr key={o.key}>
+                  <tr key={o.key} style={{ opacity: isDoomed ? 0.6 : 1 }}>
                     <td className="mono">{shortAddress(o.commander)}</td>
                     <td className="num">{o.zoneId}</td>
                     <td className="num">{o.units}</td>
-                    <td className={`num ${pastTypical ? 'warn' : ''}`}>
-                      <span className="wire-dot pulse" aria-hidden="true" />
-                      {o.sentAtMs > 0 ? formatElapsed(elapsedMs) : '…'}
-                      {pastTypical && ' — running long (typical ~9 min)'}
+                    <td className={`num ${pastTypical && !isDoomed ? 'warn' : ''}`}>
+                      {isDoomed ? (
+                        <span
+                          className="pill error"
+                          title={
+                            doomReason === 'invalid-zone'
+                              ? "This zone doesn't exist in the game — resolveOrder always reverts with InvalidZone."
+                              : 'This commander never joined before the game left OPEN, and joining is no longer possible — resolveOrder always reverts with NotJoined.'
+                          }
+                        >
+                          {o.sentAtMs > 0 ? formatElapsed(elapsedMs) : '…'} — stuck, will never resolve
+                        </span>
+                      ) : (
+                        <>
+                          <span className="wire-dot pulse" aria-hidden="true" />
+                          {o.sentAtMs > 0 ? formatElapsed(elapsedMs) : '…'}
+                          {pastTypical && ' — running long (typical ~9 min)'}
+                        </>
+                      )}
                     </td>
                     <td>
                       <a href={`https://sepolia.etherscan.io/tx/${o.sepoliaTxHash}`} target="_blank" rel="noreferrer">

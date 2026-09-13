@@ -53,7 +53,7 @@ export default function App() {
       <main>
         <GameSelector wallet={wallet} gameId={gameId} setGameId={setGameId} myFaction={myFaction} game={game} />
         <ZoneMap gameId={gameId} game={game} />
-        <InFlightPanel orders={orders} />
+        <InFlightPanel orders={orders} game={game} gameId={gameId} />
         <div className="deck">
           <OrderComposer wallet={wallet} gameId={gameId} game={game} myFaction={myFaction} />
           <CourierBoard wallet={wallet} orders={orders} game={game} gameId={gameId} />

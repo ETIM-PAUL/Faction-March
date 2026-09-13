@@ -8,11 +8,13 @@ import { factionColor, factionName } from '../lib/format';
 import { describeError } from '../lib/errors';
 
 const DEFAULT_ZONE_COUNT = 25;
-// ~15 minutes of CC3 blocks (roughly 1/sec) to actually join before the game goes ACTIVE —
-// long enough for a second browser/wallet to join a demo game. FactionMarch.join() reverts
-// with GameNotOpen once this window closes; the only fix at that point is a fresh game.
-const DEFAULT_OPEN_DURATION_BLOCKS = 900;
-const DEFAULT_ACTIVE_DURATION_BLOCKS = 20_000; // must be <= FactionMarch.MAX_ACTIVE_DURATION_BLOCKS (28_800)
+// CC3's measured block time is a steady 15s/block (confirmed by comparing real block
+// timestamps, not assumed) -- 40 blocks to join (~10 min), 120 active (~30 min). Short
+// enough to actually test a full OPEN -> ACTIVE -> SETTLED cycle in one sitting.
+// FactionMarch.join() reverts with GameNotOpen once the open window closes; the only fix at
+// that point is waiting for this game to settle and starting a fresh one.
+const DEFAULT_OPEN_DURATION_BLOCKS = 40;
+const DEFAULT_ACTIVE_DURATION_BLOCKS = 120; // must be <= FactionMarch.MAX_ACTIVE_DURATION_BLOCKS (28_800)
 
 export function GameSelector({
   wallet,

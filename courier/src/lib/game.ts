@@ -17,7 +17,9 @@ export async function getOrCreateGame(factionMarch: Contract): Promise<bigint> {
   }
 
   console.log('Creating a new FactionMarch game...');
-  const createTx = await factionMarch.createGame(12, 900, 20_000);
+  // CC3's measured block time is a steady 15s/block: 40 blocks (~10 min) to join, 120
+  // (~30 min) active -- short enough to exercise a full lifecycle in one CLI session.
+  const createTx = await factionMarch.createGame(12, 40, 120);
   const createReceipt = await createTx.wait();
   const createdEvent = createReceipt.logs
     .map((log: any) => {
