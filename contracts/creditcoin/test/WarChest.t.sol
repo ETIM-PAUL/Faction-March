@@ -25,7 +25,7 @@ contract WarChestTest is Test {
         march.setProofGate(address(this));
         chest.setProofGate(address(this));
 
-        march.createGame(12, 1, 1_000_000);
+        march.createGame(12, 1, 20_000);
         vm.prank(alice);
         march.join(GAME_ID); // Alpha
         vm.prank(bob);

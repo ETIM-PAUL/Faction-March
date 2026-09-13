@@ -16,6 +16,7 @@ import 'dotenv/config';
 import { createRequire } from 'module';
 import { ethers } from 'ethers';
 import { chainInfo, proofProvider } from '@gluwa/usc-sdk';
+import { getOrCreateGame } from './lib/game.js';
 
 const require = createRequire(import.meta.url);
 const orderBookArtifact = require('../../contracts/source/out/OrderBook.sol/OrderBook.json');
@@ -53,27 +54,8 @@ async function main() {
   const proofGate = new ethers.Contract(proofGateAddress, proofGateArtifact.abi, ccWallet);
   const factionMarch = new ethers.Contract(factionMarchAddress, factionMarchArtifact.abi, ccWallet);
 
-  let gameId: bigint;
-  if (gameIdArg) {
-    gameId = BigInt(gameIdArg);
-    console.log(`Using existing FactionMarch game ${gameId}`);
-  } else {
-    console.log(`Creating a new FactionMarch game on ${factionMarchAddress}...`);
-    const createTx = await factionMarch.createGame(12, 2, 100_000);
-    const createReceipt = await createTx.wait();
-    const createdEvent = createReceipt.logs
-      .map((log: any) => {
-        try {
-          return factionMarch.interface.parseLog(log);
-        } catch {
-          return null;
-        }
-      })
-      .find((parsed: any) => parsed?.name === 'GameCreated');
-    if (!createdEvent) throw new Error('GameCreated not found in receipt');
-    gameId = createdEvent.args.gameId as bigint;
-    console.log(`Created game ${gameId}`);
-  }
+  const gameId: bigint = gameIdArg ? BigInt(gameIdArg) : await getOrCreateGame(factionMarch);
+  if (gameIdArg) console.log(`Using existing FactionMarch game ${gameId}`);
 
   const commanderFaction: number = Number(await factionMarch.commanderFaction(gameId, ccWallet.address));
   if (commanderFaction === 0) {

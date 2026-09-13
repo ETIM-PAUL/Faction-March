@@ -47,6 +47,12 @@ contract FactionMarch {
     uint16 public constant MAX_ZONE_COUNT = 100;
     uint256 public constant UNITS_PER_BLOCK = 1;
     uint256 public constant MAX_UNIT_POOL = 500;
+    /// @notice Only one game may be OPEN or ACTIVE at a time (see createGame). That makes a
+    /// game's duration a shared resource, not just its creator's choice — without a cap,
+    /// anyone could permissionlessly lock out every future game for years by picking a huge
+    /// activeDurationBlocks. These bound the lockout to a sane maximum.
+    uint64 public constant MAX_OPEN_DURATION_BLOCKS = 3600;
+    uint64 public constant MAX_ACTIVE_DURATION_BLOCKS = 28_800;
 
     address public immutable deployer;
     address public proofGate;
@@ -70,6 +76,7 @@ contract FactionMarch {
     error GameDoesNotExist(uint256 gameId);
     error InvalidZoneCount(uint16 zoneCount);
     error InvalidDuration();
+    error PreviousGameNotSettled(uint256 gameId, GameState state);
     error GameNotOpen(uint256 gameId);
     error GameNotActive(uint256 gameId);
     error AlreadyJoined(address commander);
@@ -100,13 +107,25 @@ contract FactionMarch {
         _;
     }
 
-    /// @notice Opens a new game. Permissionless — anyone can start one.
+    /// @notice Opens a new game. Permissionless — anyone can start one, but only one game
+    /// may be unsettled (OPEN or ACTIVE) at a time: a new game can't be created until the
+    /// most recent one has reached SETTLED. Games are created sequentially, so checking only
+    /// the latest one is sufficient — every earlier game was itself gated by this same rule
+    /// when it was created, so by induction it's already settled.
     function createGame(uint16 zoneCount, uint64 openDurationBlocks, uint64 activeDurationBlocks)
         external
         returns (uint256 gameId)
     {
         if (zoneCount == 0 || zoneCount > MAX_ZONE_COUNT) revert InvalidZoneCount(zoneCount);
-        if (openDurationBlocks == 0 || activeDurationBlocks == 0) revert InvalidDuration();
+        if (
+            openDurationBlocks == 0 || openDurationBlocks > MAX_OPEN_DURATION_BLOCKS || activeDurationBlocks == 0
+                || activeDurationBlocks > MAX_ACTIVE_DURATION_BLOCKS
+        ) revert InvalidDuration();
+
+        if (gameCount > 0) {
+            GameState latestState = currentState(gameCount);
+            if (latestState != GameState.SETTLED) revert PreviousGameNotSettled(gameCount, latestState);
+        }
 
         gameId = ++gameCount;
         uint64 activeStartBlock = uint64(block.number) + openDurationBlocks;

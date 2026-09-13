@@ -19,6 +19,32 @@
   },
   {
     "type": "function",
+    "name": "MAX_ACTIVE_DURATION_BLOCKS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_OPEN_DURATION_BLOCKS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_UNIT_POOL",
     "inputs": [],
     "outputs": [
@@ -640,6 +666,22 @@
     "type": "error",
     "name": "OnlyDeployer",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PreviousGameNotSettled",
+    "inputs": [
+      {
+        "name": "gameId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "internalType": "enum FactionMarch.GameState"
+      }
+    ]
   },
   {
     "type": "error",

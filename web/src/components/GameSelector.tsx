@@ -12,7 +12,7 @@ const DEFAULT_ZONE_COUNT = 25;
 // long enough for a second browser/wallet to join a demo game. FactionMarch.join() reverts
 // with GameNotOpen once this window closes; the only fix at that point is a fresh game.
 const DEFAULT_OPEN_DURATION_BLOCKS = 900;
-const DEFAULT_ACTIVE_DURATION_BLOCKS = 100_000;
+const DEFAULT_ACTIVE_DURATION_BLOCKS = 20_000; // must be <= FactionMarch.MAX_ACTIVE_DURATION_BLOCKS (28_800)
 
 export function GameSelector({
   wallet,
@@ -28,6 +28,7 @@ export function GameSelector({
   game: GameData;
 }) {
   const [gameCount, setGameCount] = useState<bigint>(0n);
+  const [latestGameState, setLatestGameState] = useState<number | null>(null); // 0 OPEN, 1 ACTIVE, 2 SETTLED
   const [zoneCount, setZoneCount] = useState(DEFAULT_ZONE_COUNT);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -47,6 +48,17 @@ export function GameSelector({
       const count = await march.gameCount();
       if (cancelled) return;
       setGameCount(count);
+      if (count > 0n) {
+        // FactionMarch only allows one unsettled game at a time -- this is what
+        // createGame() itself will check, surfaced here too so the button can be
+        // disabled with an explanation instead of just reverting when clicked.
+        march
+          .currentState(count)
+          .then((s: bigint) => !cancelled && setLatestGameState(Number(s)))
+          .catch(() => !cancelled && setLatestGameState(null));
+      } else {
+        setLatestGameState(null);
+      }
       if (!hasAutoSelected.current && count > 0n) {
         hasAutoSelected.current = true;
         setGameId(count);
@@ -107,6 +119,10 @@ export function GameSelector({
   }
 
   const joinWindowClosed = game.exists && game.state !== 0; // 0 = OPEN
+  // FactionMarch.createGame() reverts with PreviousGameNotSettled unless the latest game
+  // has SETTLED — surface that here so the button is disabled with an explanation instead
+  // of letting the user spend gas on a doomed transaction.
+  const blockedByUnsettledGame = latestGameState !== null && latestGameState !== 2;
 
   return (
     <div className="campaign-strip">
@@ -132,13 +148,19 @@ export function GameSelector({
           style={{ width: 70 }}
         />
       </label>
-      <button className="ghost" onClick={createGame} disabled={busy}>
+      <button className="ghost" onClick={createGame} disabled={busy || blockedByUnsettledGame}>
         Create new game
       </button>
       <button className="ghost" onClick={joinGame} disabled={busy || gameId === null || !wallet.address || joinWindowClosed}>
         Join game {gameId?.toString() ?? ''}
       </button>
-      {joinWindowClosed && (
+      {blockedByUnsettledGame && (
+        <span className="muted">
+          Only one game can run at a time — game {gameCount.toString()} is still {latestGameState === 0 ? 'open for joining' : 'active'}.
+          Wait for it to settle before creating a new one.
+        </span>
+      )}
+      {!blockedByUnsettledGame && joinWindowClosed && (
         <span className="muted">
           Game {gameId?.toString()}'s join window has closed (it's {game.state === 1 ? 'ACTIVE' : 'SETTLED'}) — new
           players need a fresh game.

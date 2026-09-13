@@ -37,6 +37,10 @@ function friendlyMessage(name: string, args: ReadonlyArray<unknown>): string | n
   switch (name) {
     case 'GameNotOpen':
       return `Game ${a[0]} is no longer open for joining — its join window already closed. Create a new game instead.`;
+    case 'PreviousGameNotSettled': {
+      const stateName = ['still open for joining', 'still active', 'settled'][Number(a[1])] ?? 'unsettled';
+      return `Only one game can be in progress at a time — game ${a[0]} is ${stateName}. Wait for it to settle (or switch to it) before creating a new one.`;
+    }
     case 'GameDoesNotExist':
       return `Game ${a[0]} doesn't exist.`;
     case 'AlreadyJoined':

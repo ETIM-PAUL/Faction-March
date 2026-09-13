@@ -61,7 +61,7 @@ contract ProofGateTest is Test {
 
         // Game 1: both commanders join during OPEN, then roll into ACTIVE with plenty of
         // replenished units for every test scenario.
-        uint256 gameId = march.createGame(12, 1, 100_000);
+        uint256 gameId = march.createGame(12, 1, 20_000);
         require(gameId == GAME_ID, "unexpected gameId");
         vm.prank(commander);
         march.join(GAME_ID); // Alpha

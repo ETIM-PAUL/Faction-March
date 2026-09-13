@@ -52,6 +52,49 @@ contract FactionMarchTest is Test {
         march.createGame(12, 0, 100);
     }
 
+    function test_revert_createGame_openDurationExceedsMax() public {
+        uint64 tooLong = march.MAX_OPEN_DURATION_BLOCKS() + 1;
+        vm.expectRevert(FactionMarch.InvalidDuration.selector);
+        march.createGame(12, tooLong, 100);
+    }
+
+    function test_revert_createGame_activeDurationExceedsMax() public {
+        uint64 tooLong = march.MAX_ACTIVE_DURATION_BLOCKS() + 1;
+        vm.expectRevert(FactionMarch.InvalidDuration.selector);
+        march.createGame(12, 10, tooLong);
+    }
+
+    // --- only one unsettled game at a time ---
+
+    function test_revert_createGame_whilePreviousGameOpen() public {
+        uint256 first = _createGame();
+        vm.expectRevert(
+            abi.encodeWithSelector(FactionMarch.PreviousGameNotSettled.selector, first, FactionMarch.GameState.OPEN)
+        );
+        march.createGame(12, 10, 100);
+    }
+
+    function test_revert_createGame_whilePreviousGameActive() public {
+        uint256 first = _createGame();
+        (,, uint64 activeStartBlock,) = march.games(first);
+        vm.roll(activeStartBlock);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(FactionMarch.PreviousGameNotSettled.selector, first, FactionMarch.GameState.ACTIVE)
+        );
+        march.createGame(12, 10, 100);
+    }
+
+    function test_createGame_allowedOncePreviousGameSettled() public {
+        uint256 first = _createGame();
+        (,,, uint64 settleBlock) = march.games(first);
+        vm.roll(settleBlock);
+
+        uint256 second = march.createGame(12, 10, 100);
+        assertEq(second, first + 1);
+        assertEq(uint8(march.currentState(second)), uint8(FactionMarch.GameState.OPEN));
+    }
+
     function test_revert_currentState_unknownGame() public {
         vm.expectRevert(abi.encodeWithSelector(FactionMarch.GameDoesNotExist.selector, 999));
         march.currentState(999);

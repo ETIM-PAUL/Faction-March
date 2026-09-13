@@ -11,6 +11,7 @@ import 'dotenv/config';
 import { createRequire } from 'module';
 import { ethers } from 'ethers';
 import { chainInfo, proofProvider } from '@gluwa/usc-sdk';
+import { getOrCreateGame } from './lib/game.js';
 
 const require = createRequire(import.meta.url);
 const orderBookArtifact = require('../../contracts/source/out/OrderBook.sol/OrderBook.json');
@@ -50,25 +51,7 @@ async function main() {
   const maxBatchSize: bigint = await proofGate.MAX_BATCH_SIZE();
   if (BigInt(count) > maxBatchSize) throw new Error(`count (${count}) exceeds MAX_BATCH_SIZE (${maxBatchSize})`);
 
-  let gameId: bigint;
-  if (gameIdArg) {
-    gameId = BigInt(gameIdArg);
-  } else {
-    console.log(`Creating a new FactionMarch game on ${factionMarchAddress}...`);
-    const createTx = await factionMarch.createGame(12, 2, 100_000);
-    const createReceipt = await createTx.wait();
-    const createdEvent = createReceipt.logs
-      .map((log: any) => {
-        try {
-          return factionMarch.interface.parseLog(log);
-        } catch {
-          return null;
-        }
-      })
-      .find((parsed: any) => parsed?.name === 'GameCreated');
-    gameId = createdEvent.args.gameId as bigint;
-    console.log(`Created game ${gameId}`);
-  }
+  const gameId: bigint = gameIdArg ? BigInt(gameIdArg) : await getOrCreateGame(factionMarch);
 
   const commanderFaction: number = Number(await factionMarch.commanderFaction(gameId, ccWallet.address));
   if (commanderFaction === 0) {
