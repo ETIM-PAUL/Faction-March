@@ -545,16 +545,20 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_submitOrderProof_incorrectChestFee() public {
-        ProofGate feeGate = new ProofGate(
-            orderBook, address(march), address(chest), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER, CHEST_FEE
-        );
-        // Wiring isn't even needed to prove this reverts -- the fee check runs before
-        // anything touches FactionMarch or WarChest.
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
-        INativeQueryVerifier.MerkleProofEntry[] memory siblings = new INativeQueryVerifier.MerkleProofEntry[](0);
+        // The fee (with any discount) isn't known until the order's commander is decoded,
+        // deep inside _processOrder -- so unlike the old single-check version, this needs a
+        // properly wired trio to reach that check at all, not just a bare unwired ProofGate.
+        (,, ProofGate feeGate) = _freshTrioWithChestFee();
 
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(5500));
+        INativeQueryVerifier.MerkleProofEntry[] memory siblings = new INativeQueryVerifier.MerkleProofEntry[](0);
+        INativeQueryVerifier.MerkleProof memory proof = INativeQueryVerifier.MerkleProof({root: root, siblings: siblings});
+        vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(TX_INDEX_SELECTOR, proof), abi.encode(uint64(0)));
+
+        // No territory yet -- no discount, so the required fee is exactly CHEST_FEE.
         vm.expectRevert(abi.encodeWithSelector(ProofGate.IncorrectChestFee.selector, 0, CHEST_FEE));
-        feeGate.submitOrderProof(BLOCK_HEIGHT, encodedTx, bytes32(uint256(1)), siblings, bytes32(0), new bytes32[](0));
+        feeGate.submitOrderProof(BLOCK_HEIGHT, encodedTx, root, siblings, bytes32(0), new bytes32[](0));
     }
 
     function test_submitOrderProof_depositsChestFeeIntoWarChest() public {
@@ -573,7 +577,11 @@ contract ProofGateTest is Test {
         vm.prank(courier);
         feeGate.submitOrderProof{value: CHEST_FEE}(BLOCK_HEIGHT, encodedTx, root, siblings, bytes32(0), new bytes32[](0));
 
-        assertEq(freshChest.chestBalance(GAME_ID), CHEST_FEE, "courier's fee landed in this order's game's chest");
+        // This same order's own resolution captures zone 3 before the fee is deposited, so
+        // the commander's faction already holds the only territory on the board by the time
+        // WarChest splits the fee -- 100% of the yield share lands with them too.
+        uint256 expectedChestBalance = CHEST_FEE - (CHEST_FEE * freshChest.YIELD_SHARE_BPS()) / 10_000;
+        assertEq(freshChest.chestBalance(GAME_ID), expectedChestBalance, "courier's fee landed in this order's game's chest, minus the territory yield share");
         (FactionMarch.Faction owner,) = freshMarch.zones(GAME_ID, 3);
         assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha), "combat still resolved in the same transaction");
     }
@@ -605,24 +613,165 @@ contract ProofGateTest is Test {
             heights, encodedTxs, roots, siblingsPerOrder, bytes32(0), new bytes32[](0)
         );
 
-        assertEq(freshChest.chestBalance(GAME_ID), CHEST_FEE * 2, "one fee share per order in the batch, same game here");
+        // Both orders resolve (capturing zones 0 and 1 for the same commander) before either
+        // fee is deposited -- by the time each deposit's yield split runs, that one faction
+        // already holds all the territory on the board, so it earns 100% of both shares.
+        uint256 expectedChestBalance = (CHEST_FEE * 2) - ((CHEST_FEE * 2) * freshChest.YIELD_SHARE_BPS()) / 10_000;
+        assertEq(freshChest.chestBalance(GAME_ID), expectedChestBalance, "one fee share per order in the batch, minus the territory yield share");
     }
 
     function test_revert_submitOrderProofBatch_incorrectChestFee() public {
-        ProofGate feeGate = new ProofGate(
-            orderBook, address(march), address(chest), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER, CHEST_FEE
-        );
+        // The fee check now runs *after* every order in the batch is fully processed (it
+        // needs each commander decoded first, to look up their discount) -- so unlike the
+        // single-order version above, this needs a properly wired trio to reach that check
+        // at all, not just a bare unwired ProofGate.
+        (, WarChest freshChest, ProofGate feeGate) = _freshTrioWithChestFee();
+
         uint64[] memory heights = new uint64[](2);
         bytes[] memory encodedTxs = new bytes[](2);
         bytes32[] memory roots = new bytes32[](2);
         INativeQueryVerifier.MerkleProofEntry[][] memory siblingsPerOrder = new INativeQueryVerifier.MerkleProofEntry[][](2);
-        siblingsPerOrder[0] = new INativeQueryVerifier.MerkleProofEntry[](0);
-        siblingsPerOrder[1] = new INativeQueryVerifier.MerkleProofEntry[](0);
 
-        // Sent enough for only one order, not both.
+        for (uint256 i = 0; i < 2; i++) {
+            heights[i] = BLOCK_HEIGHT + uint64(i);
+            roots[i] = bytes32(uint256(5000 + i));
+            siblingsPerOrder[i] = new INativeQueryVerifier.MerkleProofEntry[](0);
+            INativeQueryVerifier.MerkleProof memory proof =
+                INativeQueryVerifier.MerkleProof({root: roots[i], siblings: siblingsPerOrder[i]});
+            vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(TX_INDEX_SELECTOR, proof), abi.encode(uint64(i)));
+            encodedTxs[i] =
+                _encodeTx(orderBook, _orderTopics(commander, GAME_ID, uint16(i)), abi.encode(uint32(1), uint64(i)), 1);
+        }
+
+        // Sent enough for only one order, not both -- commander here holds no territory, so
+        // there's no discount and the required total is exactly CHEST_FEE * 2.
         vm.expectRevert(abi.encodeWithSelector(ProofGate.IncorrectChestFee.selector, CHEST_FEE, CHEST_FEE * 2));
         feeGate.submitOrderProofBatch{value: CHEST_FEE}(
             heights, encodedTxs, roots, siblingsPerOrder, bytes32(0), new bytes32[](0)
         );
+
+        // Reverted atomically -- neither order actually resolved, chest got nothing.
+        assertEq(freshChest.chestBalance(GAME_ID), 0);
+    }
+
+    // --- Phase 17: overpayment is refunded rather than rejected ---
+
+    function test_submitOrderProof_overpaidChestFee_refundsExcess() public {
+        // A courier's pre-flight fee estimate is read before this transaction runs, so it
+        // can't see a discount this same order's own capture is about to unlock -- exactly
+        // what happened live and prompted this fix. Simulate that mismatch directly: pay the
+        // full undiscounted CHEST_FEE for an order that, once resolved, actually qualifies
+        // for a discount, and confirm it succeeds (instead of reverting) with the difference
+        // refunded.
+        (FactionMarch freshMarch, WarChest freshChest, ProofGate feeGate) = _freshTrioWithChestFee();
+
+        vm.startPrank(address(feeGate));
+        freshMarch.resolveOrder(GAME_ID, commander, 0, 1);
+        freshMarch.resolveOrder(GAME_ID, commander, 1, 1);
+        freshMarch.resolveOrder(GAME_ID, commander, 2, 1);
+        vm.stopPrank();
+        uint256 discountedFee = CHEST_FEE - (CHEST_FEE * 500) / 10_000; // TIER_1, 5% off
+
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(1), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(7001));
+        INativeQueryVerifier.MerkleProofEntry[] memory siblings = new INativeQueryVerifier.MerkleProofEntry[](0);
+        INativeQueryVerifier.MerkleProof memory proof = INativeQueryVerifier.MerkleProof({root: root, siblings: siblings});
+        vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(TX_INDEX_SELECTOR, proof), abi.encode(uint64(0)));
+
+        address courier = makeAddr("overpayCourier");
+        vm.deal(courier, CHEST_FEE); // pays the full, undiscounted fee -- more than actually required
+
+        vm.prank(courier);
+        feeGate.submitOrderProof{value: CHEST_FEE}(BLOCK_HEIGHT, encodedTx, root, siblings, bytes32(0), new bytes32[](0));
+
+        assertEq(courier.balance, CHEST_FEE - discountedFee, "excess over the true (discounted) fee was refunded");
+        uint256 expectedChestBalance = discountedFee - (discountedFee * freshChest.YIELD_SHARE_BPS()) / 10_000;
+        assertEq(freshChest.chestBalance(GAME_ID), expectedChestBalance, "chest only received the true discounted fee, not the overpayment");
+    }
+
+    function test_submitOrderProofBatch_overpaidChestFee_refundsExcess() public {
+        (, WarChest freshChest, ProofGate feeGate) = _freshTrioWithChestFee();
+
+        uint64[] memory heights = new uint64[](2);
+        bytes[] memory encodedTxs = new bytes[](2);
+        bytes32[] memory roots = new bytes32[](2);
+        INativeQueryVerifier.MerkleProofEntry[][] memory siblingsPerOrder = new INativeQueryVerifier.MerkleProofEntry[][](2);
+
+        for (uint256 i = 0; i < 2; i++) {
+            heights[i] = BLOCK_HEIGHT + uint64(i);
+            roots[i] = bytes32(uint256(7100 + i));
+            siblingsPerOrder[i] = new INativeQueryVerifier.MerkleProofEntry[](0);
+            INativeQueryVerifier.MerkleProof memory proof =
+                INativeQueryVerifier.MerkleProof({root: roots[i], siblings: siblingsPerOrder[i]});
+            vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(TX_INDEX_SELECTOR, proof), abi.encode(uint64(i)));
+            encodedTxs[i] =
+                _encodeTx(orderBook, _orderTopics(commander, GAME_ID, uint16(i)), abi.encode(uint32(1), uint64(i)), 1);
+        }
+
+        address courier = makeAddr("batchOverpayCourier");
+        vm.deal(courier, CHEST_FEE * 3); // sends far more than the true total (no discount applies -- commander starts with no territory)
+
+        vm.prank(courier);
+        feeGate.submitOrderProofBatch{value: CHEST_FEE * 3}(
+            heights, encodedTxs, roots, siblingsPerOrder, bytes32(0), new bytes32[](0)
+        );
+
+        assertEq(courier.balance, CHEST_FEE, "excess over the true total (CHEST_FEE * 2) was refunded");
+        uint256 expectedChestBalance = (CHEST_FEE * 2) - ((CHEST_FEE * 2) * freshChest.YIELD_SHARE_BPS()) / 10_000;
+        assertEq(freshChest.chestBalance(GAME_ID), expectedChestBalance, "chest only received the true total, not the overpayment");
+    }
+
+    // --- Phase 16: chest fee discount, scaled by the commander's own faction's territory ---
+
+    function test_submitOrderProof_appliesDiscountFromCommandersTerritory() public {
+        (FactionMarch freshMarch, WarChest freshChest, ProofGate feeGate) = _freshTrioWithChestFee();
+
+        // Give the commander's faction (Alpha) 3 zones -- TIER_1, a 5% discount -- by
+        // resolving three cheap reinforcement orders directly (bypassing proofs entirely,
+        // since this is just about setting up territory, not testing proof mechanics).
+        vm.startPrank(address(feeGate));
+        freshMarch.resolveOrder(GAME_ID, commander, 0, 1);
+        freshMarch.resolveOrder(GAME_ID, commander, 1, 1);
+        freshMarch.resolveOrder(GAME_ID, commander, 2, 1);
+        vm.stopPrank();
+        assertEq(freshChest.discountBps(GAME_ID, FactionMarch.Faction.Alpha), 500, "3 zones -> TIER_1, 5%");
+
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(1), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(6001));
+        INativeQueryVerifier.MerkleProofEntry[] memory siblings = new INativeQueryVerifier.MerkleProofEntry[](0);
+        INativeQueryVerifier.MerkleProof memory proof = INativeQueryVerifier.MerkleProof({root: root, siblings: siblings});
+        vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(TX_INDEX_SELECTOR, proof), abi.encode(uint64(0)));
+
+        uint256 discountedFee = CHEST_FEE - (CHEST_FEE * 500) / 10_000; // 5% off
+        assertLt(discountedFee, CHEST_FEE, "sanity: discount actually reduces the fee");
+
+        address courier = makeAddr("discountCourier");
+        vm.deal(courier, discountedFee);
+
+        vm.prank(courier);
+        feeGate.submitOrderProof{value: discountedFee}(BLOCK_HEIGHT, encodedTx, root, siblings, bytes32(0), new bytes32[](0));
+
+        // This order captures a 4th zone for the same (only) faction on the board, so it
+        // still earns 100% of the discounted fee's yield share.
+        uint256 expectedChestBalance = discountedFee - (discountedFee * freshChest.YIELD_SHARE_BPS()) / 10_000;
+        assertEq(freshChest.chestBalance(GAME_ID), expectedChestBalance, "exactly the discounted amount landed in the chest, minus the territory yield share");
+    }
+
+    function test_submitOrderProof_zeroTerritory_noDiscount() public {
+        (, WarChest freshChest, ProofGate feeGate) = _freshTrioWithChestFee();
+
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(1), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(6002));
+        INativeQueryVerifier.MerkleProofEntry[] memory siblings = new INativeQueryVerifier.MerkleProofEntry[](0);
+        INativeQueryVerifier.MerkleProof memory proof = INativeQueryVerifier.MerkleProof({root: root, siblings: siblings});
+        vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(TX_INDEX_SELECTOR, proof), abi.encode(uint64(0)));
+
+        feeGate.submitOrderProof{value: CHEST_FEE}(BLOCK_HEIGHT, encodedTx, root, siblings, bytes32(0), new bytes32[](0));
+
+        // No territory *before* this order -- hence no discount on the fee itself -- but its
+        // own capture of zone 3 means the commander's faction holds the board's only
+        // territory by the time the fee is deposited, so it still earns the yield share.
+        uint256 expectedChestBalance = CHEST_FEE - (CHEST_FEE * freshChest.YIELD_SHARE_BPS()) / 10_000;
+        assertEq(freshChest.chestBalance(GAME_ID), expectedChestBalance, "no discount, but the territory yield share still applies once this order captures a zone");
     }
 }

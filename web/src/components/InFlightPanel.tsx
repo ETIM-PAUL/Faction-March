@@ -61,7 +61,7 @@ export function InFlightPanel({ orders, game, gameId }: { orders: TrackedOrder[]
                 return (
                   <tr key={o.key} style={{ opacity: isDoomed ? 0.6 : 1 }}>
                     <td className="mono">{shortAddress(o.commander)}</td>
-                    <td className="num">{o.zoneId}</td>
+                    <td className="num">{o.zoneId + 1}</td>
                     <td className="num">{o.units}</td>
                     <td className={`num ${pastTypical && !isDoomed ? 'warn' : ''}`}>
                       {isDoomed ? (
@@ -134,7 +134,7 @@ export function InFlightPanel({ orders, game, gameId }: { orders: TrackedOrder[]
           <ul className="history-list">
             {resolved.map((o) => (
               <li key={o.key}>
-                {shortAddress(o.commander)} → zone {o.zoneId}, {o.units} units — proven
+                {shortAddress(o.commander)} → zone {o.zoneId + 1}, {o.units} units — proven
                 {o.resolvedAtMs && o.sentAtMs > 0 ? ` in ${formatElapsed(o.resolvedAtMs - o.sentAtMs)}` : ''}
               </li>
             ))}

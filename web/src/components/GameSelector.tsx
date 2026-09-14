@@ -3,11 +3,10 @@ import type { useWallet } from '../hooks/useWallet';
 import type { GameData } from '../hooks/useGameData';
 import { creditcoinReadProvider } from '../lib/providers';
 import { factionMarchContract } from '../lib/contracts';
-import { CREDITCOIN_CHAIN_ID } from '../config';
+import { CREDITCOIN_CHAIN_ID, GAME_ZONE_COUNT } from '../config';
 import { factionColor, factionName } from '../lib/format';
 import { describeError } from '../lib/errors';
 
-const DEFAULT_ZONE_COUNT = 25;
 // CC3's measured block time is a steady 15s/block (confirmed by comparing real block
 // timestamps, not assumed) -- 40 blocks to join (~10 min), 120 active (~30 min). Short
 // enough to actually test a full OPEN -> ACTIVE -> SETTLED cycle in one sitting.
@@ -31,7 +30,6 @@ export function GameSelector({
 }) {
   const [gameCount, setGameCount] = useState<bigint>(0n);
   const [latestGameState, setLatestGameState] = useState<number | null>(null); // 0 OPEN, 1 ACTIVE, 2 SETTLED
-  const [zoneCount, setZoneCount] = useState(DEFAULT_ZONE_COUNT);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -82,7 +80,7 @@ export function GameSelector({
       if (wallet.chainId !== CREDITCOIN_CHAIN_ID) await wallet.switchToCreditcoin();
       const signer = await wallet.getSigner();
       const march = factionMarchContract(signer);
-      const tx = await march.createGame(zoneCount, DEFAULT_OPEN_DURATION_BLOCKS, DEFAULT_ACTIVE_DURATION_BLOCKS);
+      const tx = await march.createGame(GAME_ZONE_COUNT, DEFAULT_OPEN_DURATION_BLOCKS, DEFAULT_ACTIVE_DURATION_BLOCKS);
       const receipt = await tx.wait();
       const created = receipt.logs
         .map((l: unknown) => {
@@ -94,7 +92,7 @@ export function GameSelector({
         })
         .find((p: { name: string } | null) => p?.name === 'GameCreated');
       if (created) setGameId(created.args.gameId as bigint);
-      setStatus(`Game created (${zoneCount} zones).`);
+      setStatus(`Game created (${GAME_ZONE_COUNT} zones).`);
     } catch (err) {
       setStatus(describeError(err));
     } finally {
@@ -139,19 +137,8 @@ export function GameSelector({
         />
       </label>
       <span className="muted mono">{gameCount.toString()} created so far</span>
-      <label>
-        Zones (new game)
-        <input
-          type="number"
-          min={1}
-          max={100}
-          value={zoneCount}
-          onChange={(e) => setZoneCount(Math.max(1, Math.min(100, Number(e.target.value))))}
-          style={{ width: 70 }}
-        />
-      </label>
-      <button className="ghost" onClick={createGame} disabled={busy || blockedByUnsettledGame}>
-        Create new game
+      <button className="ghost" onClick={createGame} disabled={busy || blockedByUnsettledGame} title={`Every game is ${GAME_ZONE_COUNT} zones`}>
+        Create new game ({GAME_ZONE_COUNT} zones)
       </button>
       <button className="ghost" onClick={joinGame} disabled={busy || gameId === null || !wallet.address || joinWindowClosed}>
         Join game {gameId?.toString() ?? ''}

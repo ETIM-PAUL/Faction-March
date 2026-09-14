@@ -1,4 +1,5 @@
 import { AbiCoder, keccak256 } from 'ethers';
+import { ADDRESSES } from '../config';
 
 // Client-side half of OrderBook's commit/reveal split (Phase 14). The salt lives only in the
 // committer's own browser -- nobody else, not even a courier, can compute commitHash back
@@ -30,8 +31,13 @@ export function randomSalt(): string {
   return '0x' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Namespaced by the current FactionMarch address, not just the wallet -- FactionMarch's
+// gameCount resets to 0 on every redeploy, so a pending reveal committed against a
+// superseded deployment would otherwise resurface pointing at an unrelated game that now
+// reuses its gameId number. Bumping ADDRESSES.factionMarch (as every redeploy already does)
+// orphans old entries automatically instead of requiring anyone to clear browser storage.
 function storageKey(address: string): string {
-  return `factionmarch.pendingReveals.${address.toLowerCase()}`;
+  return `factionmarch.pendingReveals.${ADDRESSES.factionMarch.toLowerCase()}.${address.toLowerCase()}`;
 }
 
 export function loadPendingReveals(address: string): PendingReveal[] {

@@ -3,7 +3,7 @@ import { Interface } from 'ethers';
 import { sepoliaReadProvider, creditcoinReadProvider } from '../lib/providers';
 import OrderBookAbi from '../abis/OrderBook.json';
 import ProofGateAbi from '../abis/ProofGate.json';
-import { ADDRESSES } from '../config';
+import { ADDRESSES, CURRENT_DEPLOYMENT_SEPOLIA_BLOCK } from '../config';
 
 export interface TrackedOrder {
   key: string; // commander|zoneId|nonce
@@ -76,7 +76,12 @@ export function useOrders(gameId: bigint | null, intervalMs = 10000) {
     async function poll() {
       try {
         const currentSepoliaBlock = await sepoliaReadProvider.getBlockNumber();
-        const fromSepolia = lastSepoliaBlock.current ?? Math.max(0, currentSepoliaBlock - LOOKBACK_BLOCKS);
+        // Never scan below the current deployment's cutoff -- see its definition in config.ts
+        // for why (gameId numbers get reused across FactionMarch redeploys).
+        const fromSepolia = Math.max(
+          lastSepoliaBlock.current ?? Math.max(0, currentSepoliaBlock - LOOKBACK_BLOCKS),
+          CURRENT_DEPLOYMENT_SEPOLIA_BLOCK
+        );
         const revealedLogs = await queryLogsChunked(
           sepoliaReadProvider,
           ADDRESSES.orderBook,

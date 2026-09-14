@@ -72,11 +72,36 @@ interface IChainInfo {
 /// sitting inert until someone clicks a "fund chest" button unprompted. It's charged to the
 /// courier, not the commander, so it nets against BOUNTY_PER_ORDER rather than adding a new
 /// cost on top of the Sepolia fee; deliberately kept smaller than the bounty so a courier
-/// that successfully lands proofs stays net-positive. Enforced per-order even inside a batch
-/// (msg.value must equal CHEST_FEE_PER_ORDER * count), and routed to each order's own gameId
+/// that successfully lands proofs stays net-positive. Routed to each order's own gameId
 /// individually rather than summed into one deposit — correct regardless, and specifically
 /// matters if FactionMarch's current one-active-game-at-a-time rule (see createGame) is ever
 /// relaxed, since nothing here assumes every order in a batch shares a gameId.
+///
+/// On the discount (Phase 16): WarChest.discountBps was originally meant to discount the
+/// Sepolia order fee, which turned out to be structurally impossible (Creditcoin can't
+/// affect a Sepolia transaction's cost -- Attestcoin proofs run one direction only). This is
+/// the fee it can actually discount: the *courier's* chest fee for proving an order, scaled
+/// down by the *order's own commander's* faction territory tier at the moment the proof
+/// lands. A bigger faction is cheaper to courier for -- a real, live-computed effect, not
+/// just a number shown in a table. The exact required fee isn't known until the order's
+/// commander is decoded (deep inside _processOrder), so unlike before, msg.value can't be
+/// checked at the top of either entry point -- it's checked once the true total is known,
+/// after the fee-moving side effects. This is still safe: Solidity reverts are atomic, so a
+/// transaction that doesn't cover the required amount undoes every deposit and every
+/// accounting change it made along the way, including anything that would otherwise look
+/// like it "borrowed" from the separately-accounted bounty pool's real balance.
+///
+/// On over/underpayment (Phase 17): because feeCharged depends on the *same transaction's*
+/// own resolveOrder side effects (a capture that just crossed a discount-tier threshold
+/// already discounts that very order, see _discountedChestFee), no caller can predict the
+/// exact required fee purely from state read before sending the transaction -- only from
+/// state as it will exist mid-transaction. Requiring an exact msg.value match under that
+/// constraint meant a caller's best-effort, pre-flight estimate would routinely overshoot
+/// (or undershoot) by exactly the amount a same-batch capture changed the discount by, and a
+/// harmless overpayment reverted the whole submission instead of just costing slightly more
+/// than necessary. Both entry points now accept msg.value >= the true required total and
+/// refund the difference to msg.sender at the end of the call; only genuine underpayment
+/// still reverts with IncorrectChestFee.
 contract ProofGate {
     /// @dev keccak256("OrderRevealed(address,uint256,uint16,uint32,uint64)") -- the event
     /// OrderBook's two-phase commit/reveal emits once units are actually exposed (Phase 14).
@@ -138,6 +163,7 @@ contract ProofGate {
     error InvalidBatchSize(uint256 size);
     error BatchLengthMismatch();
     error IncorrectChestFee(uint256 sent, uint256 required);
+    error RefundFailed();
 
     constructor(
         address orderBook,
@@ -178,8 +204,6 @@ contract ProofGate {
         bytes32 lowerEndpointDigest,
         bytes32[] calldata continuityRoots
     ) external payable {
-        if (msg.value != CHEST_FEE_PER_ORDER) revert IncorrectChestFee(msg.value, CHEST_FEE_PER_ORDER);
-
         INativeQueryVerifier.MerkleProof memory merkleProof =
             INativeQueryVerifier.MerkleProof({root: merkleRoot, siblings: siblings});
         INativeQueryVerifier.ContinuityProof memory continuityProof =
@@ -190,7 +214,12 @@ contract ProofGate {
         if (!verified) revert ProofVerificationFailed();
 
         uint64 txIndex = VERIFIER.calculateTxIndex(merkleProof);
-        _processOrder(blockHeight, txIndex, encodedTransaction, CHEST_FEE_PER_ORDER);
+        (uint256 gameId, uint256 feeCharged) = _processOrder(blockHeight, txIndex, encodedTransaction);
+        if (msg.value < feeCharged) revert IncorrectChestFee(msg.value, feeCharged);
+        // Deposited only now, after msg.value is confirmed sufficient -- see the batch version
+        // below for why a "deposit as you go" ordering is worth avoiding even here.
+        if (feeCharged > 0) WAR_CHEST.depositToChest{value: feeCharged}(gameId);
+        _refundExcess(feeCharged);
     }
 
     /// @notice Verify up to MAX_BATCH_SIZE proofs sharing one continuity proof in a single
@@ -210,8 +239,6 @@ contract ProofGate {
         if (encodedTransactions.length != n || merkleRoots.length != n || siblingsPerOrder.length != n) {
             revert BatchLengthMismatch();
         }
-        uint256 requiredFee = CHEST_FEE_PER_ORDER * n;
-        if (msg.value != requiredFee) revert IncorrectChestFee(msg.value, requiredFee);
 
         INativeQueryVerifier.MerkleProof[] memory merkleProofs = new INativeQueryVerifier.MerkleProof[](n);
         for (uint256 i = 0; i < n; i++) {
@@ -225,16 +252,53 @@ contract ProofGate {
         );
         if (!verified) revert ProofVerificationFailed();
 
+        // Two passes, deliberately: resolve every order and total up what each one's
+        // (possibly discounted) fee actually is first, *then* check msg.value, *then* only
+        // deposit once that check has passed. Depositing as each order resolved instead
+        // would mean an underpaid batch could partially drain its own msg.value on the
+        // first order or two, then hit a hard "insufficient balance" revert with no error
+        // data on a later one, once the contract's balance ran out -- still safe (Solidity
+        // reverts are atomic, nothing is lost or stuck either way), but a confusing, useless
+        // error instead of a clean IncorrectChestFee telling the courier what they actually
+        // owed.
+        uint256[] memory feePerOrder = new uint256[](n);
+        uint256[] memory gameIdPerOrder = new uint256[](n);
+        uint256 totalFee = 0;
         for (uint256 i = 0; i < n; i++) {
             uint64 txIndex = VERIFIER.calculateTxIndex(merkleProofs[i]);
-            _processOrder(blockHeights[i], txIndex, encodedTransactions[i], CHEST_FEE_PER_ORDER);
+            (uint256 gameId, uint256 fee) = _processOrder(blockHeights[i], txIndex, encodedTransactions[i]);
+            gameIdPerOrder[i] = gameId;
+            feePerOrder[i] = fee;
+            totalFee += fee;
         }
+        if (msg.value < totalFee) revert IncorrectChestFee(msg.value, totalFee);
+
+        for (uint256 i = 0; i < n; i++) {
+            if (feePerOrder[i] > 0) WAR_CHEST.depositToChest{value: feePerOrder[i]}(gameIdPerOrder[i]);
+        }
+        _refundExcess(totalFee);
+    }
+
+    /// @dev Refunds msg.value beyond `required` back to msg.sender. Called only after every
+    /// deposit this call is going to make has already happened, so this is always the very
+    /// last transfer in either entry point.
+    function _refundExcess(uint256 required) internal {
+        uint256 excess = msg.value - required;
+        if (excess == 0) return;
+        (bool ok,) = msg.sender.call{value: excess}("");
+        if (!ok) revert RefundFailed();
     }
 
     /// @dev Shared by both entry points: checks 1-3 (via _findOrderLog), 4, 5, 7, then
     /// resolves on FactionMarch and pays the bounty. Assumes inclusion/continuity (the
-    /// precompile call) was already verified by the caller.
-    function _processOrder(uint64 blockHeight, uint64 txIndex, bytes memory encodedTransaction, uint256 chestFee) internal {
+    /// precompile call) was already verified by the caller. Returns the order's gameId and
+    /// the chest fee it owes (after the commander's faction discount) but does NOT deposit
+    /// it -- callers total every order's fee, verify msg.value against that total, and only
+    /// then actually call WAR_CHEST.depositToChest, once per order, themselves.
+    function _processOrder(uint64 blockHeight, uint64 txIndex, bytes memory encodedTransaction)
+        internal
+        returns (uint256 gameId, uint256 feeCharged)
+    {
         EvmV1Decoder.ReceiptFields memory receipt = EvmV1Decoder.decodeReceiptFields(encodedTransaction);
         if (receipt.receiptStatus != 1) revert TransactionDidNotSucceed();
 
@@ -242,7 +306,7 @@ contract ProofGate {
         (EvmV1Decoder.LogEntry memory log, uint256 logIndex) = _findOrderLog(receipt);
 
         address commander = address(uint160(uint256(log.topics[1])));
-        uint256 gameId = uint256(log.topics[2]);
+        gameId = uint256(log.topics[2]);
         uint16 zoneId = uint16(uint256(log.topics[3]));
         (uint32 units, uint64 nonce) = abi.decode(log.data, (uint32, uint64));
 
@@ -269,15 +333,27 @@ contract ProofGate {
         // Same-tx verify-and-execute: combat resolves in this transaction, not a later one.
         FACTION_MARCH.resolveOrder(gameId, commander, zoneId, units);
 
-        // Real CTC, moved by a real action, into the specific game this order belongs to --
-        // not split evenly across a batch, since a batch can legally span more than one game.
-        if (chestFee > 0) WAR_CHEST.depositToChest{value: chestFee}(gameId);
+        // The fee owed for this order -- discounted by the commander's own faction's live
+        // territory tier (see contract-level NatSpec on the discount), read *after*
+        // resolveOrder so a capture that just pushed this faction into a new tier this same
+        // transaction already counts. Not deposited here -- see callers.
+        feeCharged = _discountedChestFee(gameId, commander);
 
         bool bountyPaid = _payBounty(orderKey);
 
         // Same-tx reputation recording — the only authentic (non-self-reported) source for
         // WarChest's ordersProven/bountiesClaimed counters.
         WAR_CHEST.recordOrderResolution(gameId, commander, msg.sender, nonce, bountyPaid);
+    }
+
+    /// @dev CHEST_FEE_PER_ORDER, reduced by the commander's faction's current
+    /// WarChest.discountBps -- 0% under 3 zones held, up to 20% at 9+. Bounded below by 0
+    /// automatically: discountBps never exceeds 10_000 (100%), so this can't underflow.
+    function _discountedChestFee(uint256 gameId, address commander) internal view returns (uint256) {
+        if (CHEST_FEE_PER_ORDER == 0) return 0;
+        FactionMarch.Faction faction = FACTION_MARCH.commanderFaction(gameId, commander);
+        uint256 discountBps = WAR_CHEST.discountBps(gameId, faction);
+        return CHEST_FEE_PER_ORDER - (CHEST_FEE_PER_ORDER * discountBps) / 10_000;
     }
 
     /// @dev Never lets a dry pool block order resolution — the courier just goes unpaid.

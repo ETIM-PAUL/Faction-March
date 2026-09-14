@@ -515,6 +515,11 @@
   },
   {
     "type": "error",
+    "name": "RefundFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "TransactionDidNotSucceed",
     "inputs": []
   },

@@ -23,6 +23,13 @@ export function formatElapsed(ms: number): string {
 
 export function formatCtc(wei: bigint, decimals = 5): string {
   const asNumber = Number(wei) / 1e18;
+  // A genuinely nonzero amount smaller than `decimals` can show (e.g. a 0.000002 CTC borrow
+  // against a 5-decimal display) would otherwise round to "0.00000" -- indistinguishable
+  // from nothing happening at all. Fall back to full precision for exactly that case, rather
+  // than let a real state change look like a no-op.
+  if (wei !== 0n && Math.abs(asNumber) < 10 ** -decimals) {
+    return asNumber.toFixed(18).replace(/0+$/, '');
+  }
   return asNumber.toFixed(decimals);
 }
 

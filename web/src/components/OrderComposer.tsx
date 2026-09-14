@@ -4,17 +4,12 @@ import type { useWallet } from '../hooks/useWallet';
 import type { GameData } from '../hooks/useGameData';
 import { factionMarchContract, orderBookContract } from '../lib/contracts';
 import { creditcoinReadProvider, sepoliaReadProvider } from '../lib/providers';
-import { SEPOLIA_CHAIN_ID } from '../config';
+import { SEPOLIA_CHAIN_ID, TYPICAL_MARCH_TIME_MS } from '../config';
 import { describeError } from '../lib/errors';
+import { formatCountdown } from '../lib/format';
+import { useCountdown } from '../hooks/useCountdown';
 import { MAX_UNITS_PER_ORDER } from '../hooks/useDoomedOrders';
-import {
-  computeCommitHash,
-  loadPendingReveals,
-  randomSalt,
-  removePendingReveal,
-  savePendingReveal,
-  type PendingReveal,
-} from '../lib/commitReveal';
+import { computeCommitHash, randomSalt, savePendingReveal, type PendingReveal } from '../lib/commitReveal';
 
 export function OrderComposer({
   wallet,
@@ -33,10 +28,17 @@ export function OrderComposer({
   const [status, setStatus] = useState<string | null>(null);
   const [orderFeeEth, setOrderFeeEth] = useState<string | null>(null);
   const [availableUnits, setAvailableUnits] = useState<number | null>(null);
-  const [pendingReveals, setPendingReveals] = useState<PendingReveal[]>([]);
-  const [revealBusyNonce, setRevealBusyNonce] = useState<string | null>(null);
 
   const maxZone = game.zoneCount > 0 ? game.zoneCount - 1 : 0;
+
+  // resolveOrder requires currentState == ACTIVE with no grace period -- the instant the
+  // game crosses settleBlock, it's SETTLED forever, and any proof arriving after that
+  // reverts with GameNotActive permanently, no retry fixes it. Typical march time is ~9 min
+  // (measured, not a hard cap -- can run longer), so committing/revealing this close to the
+  // end is genuinely risky, just not *guaranteed* doomed the way an over-cap order is -- a
+  // warning, not a hard block.
+  const secondsUntilSettle = useCountdown(game.settleBlock, game.ccBlockNumber);
+  const settlingSoon = game.state === 1 && secondsUntilSettle > 0 && secondsUntilSettle * 1000 < TYPICAL_MARCH_TIME_MS;
 
   // Reset the selected zone only when the *game* changes underneath it (e.g. switching to
   // a smaller board) -- not on every keystroke, or a user typing an out-of-range zone would
@@ -63,12 +65,6 @@ export function OrderComposer({
       cancelled = true;
     };
   }, []);
-
-  // Pending reveals are pure local state (the salt only ever lives in this browser) -- reload
-  // whenever the connected wallet changes, since they're stored per-address.
-  useEffect(() => {
-    setPendingReveals(wallet.address ? loadPendingReveals(wallet.address) : []);
-  }, [wallet.address]);
 
   // Live unit-pool balance for this wallet, in this game -- informational only. Unlike the
   // permanent MAX_UNITS_PER_ORDER cap below, "not enough available right now" is temporary:
@@ -119,7 +115,7 @@ export function OrderComposer({
   async function commitOrder() {
     if (gameId === null || !wallet.address) return;
     if (zoneOutOfRange) {
-      setStatus(`Zone ${zoneId} doesn't exist in this game — valid zones are 0–${maxZone}.`);
+      setStatus(`Zone ${zoneId + 1} doesn't exist in this game — valid zones are 1–${maxZone + 1}.`);
       return;
     }
     if (exceedsUnitCap) {
@@ -157,9 +153,8 @@ export function OrderComposer({
 
       const reveal: PendingReveal = { gameId: gameId.toString(), zoneId, nonce, units, salt, committedAtMs: Date.now() };
       savePendingReveal(wallet.address, reveal);
-      setPendingReveals(loadPendingReveals(wallet.address));
 
-      setStatus(`Committed (${tx.hash}) — reveal whenever you're ready, below.`);
+      setStatus(`Committed (${tx.hash}) — reveal it from the Courier board when you're ready to have it proven.`);
     } catch (err) {
       setStatus(describeError(err));
     } finally {
@@ -167,32 +162,14 @@ export function OrderComposer({
     }
   }
 
-  async function revealOrder(reveal: PendingReveal) {
-    if (!wallet.address) return;
-    setRevealBusyNonce(reveal.nonce);
-    setStatus(null);
-    try {
-      if (wallet.chainId !== SEPOLIA_CHAIN_ID) await wallet.switchToSepolia();
-      const signer = await wallet.getSigner();
-      const orderBook = orderBookContract(signer);
-      const tx = await orderBook.revealOrder(reveal.nonce, reveal.units, reveal.salt);
-      setStatus(`Revealing: ${tx.hash}. Waiting for it to mine on Sepolia…`);
-      await tx.wait(1);
-      removePendingReveal(wallet.address, reveal.nonce);
-      setPendingReveals(loadPendingReveals(wallet.address));
-      setStatus(`Revealed (${tx.hash}) — now in flight, below.`);
-    } catch (err) {
-      setStatus(describeError(err));
-    } finally {
-      setRevealBusyNonce(null);
-    }
-  }
-
   return (
     <div className="panel">
       <div className="panel-header">
         <h2>Dispatch an order</h2>
-        <span className="panel-eyebrow" title="Commit hides your unit count; reveal it whenever you choose to make it provable.">
+        <span
+          className="panel-eyebrow"
+          title="Commit hides your unit count. Reveal moved to the Courier board -- it's the first step of getting an order proven, not a standalone action."
+        >
           Sepolia · commit → reveal
         </span>
       </div>
@@ -201,10 +178,10 @@ export function OrderComposer({
           Zone
           <input
             type="number"
-            min={0}
-            max={maxZone}
-            value={zoneId}
-            onChange={(e) => setZoneId(Number(e.target.value))}
+            min={1}
+            max={maxZone + 1}
+            value={zoneId + 1}
+            onChange={(e) => setZoneId(Number(e.target.value) - 1)}
             style={{ width: 60, borderColor: zoneOutOfRange ? 'var(--danger, #d1574a)' : undefined }}
           />
         </label>
@@ -231,10 +208,10 @@ export function OrderComposer({
       </div>
       <p className="muted" title="Flat fee regardless of units; a 500-unit pool refills 1/block.">
         Fee {orderFeeEth ? `${orderFeeEth} ETH` : '…'} · max {MAX_UNITS_PER_ORDER}/order
-        {game.zoneCount > 0 && ` · zones 0–${maxZone}`}
+        {game.zoneCount > 0 && ` · zones 1–${maxZone + 1}`}
         {wallet.address && gameId !== null && !notJoined && ` · ${availableUnits ?? '…'} available`}
       </p>
-      {zoneOutOfRange && <p className="error">Zone {zoneId} doesn't exist — pick 0–{maxZone}.</p>}
+      {zoneOutOfRange && <p className="error">Zone {zoneId + 1} doesn't exist — pick 1–{maxZone + 1}.</p>}
       {exceedsUnitCap && <p className="error">Max {MAX_UNITS_PER_ORDER} units per order.</p>}
       {!exceedsUnitCap && insufficientRightNow && (
         <p className="muted" title="Refills 1/block — march time usually covers the wait.">
@@ -246,43 +223,16 @@ export function OrderComposer({
       ) : (
         notJoined && <p className="muted">Join game {gameId} before its window closes.</p>
       )}
-      {status && <p className="muted">{status}</p>}
-
-      {pendingReveals.length > 0 && (
-        <div className="section-gap">
-          <h3 style={{ margin: '0 0 6px' }} title="Stored only in this browser — clearing site data loses them permanently.">
-            Your commits awaiting reveal
-          </h3>
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Game</th>
-                  <th>Zone</th>
-                  <th>Units</th>
-                  <th>Committed</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {pendingReveals.map((r) => (
-                  <tr key={r.nonce}>
-                    <td className="num">{r.gameId}</td>
-                    <td className="num">{r.zoneId}</td>
-                    <td className="num">{r.units}</td>
-                    <td className="muted">{new Date(r.committedAtMs).toLocaleTimeString()}</td>
-                    <td>
-                      <button onClick={() => revealOrder(r)} disabled={revealBusyNonce === r.nonce || !wallet.address}>
-                        {revealBusyNonce === r.nonce ? 'Revealing…' : 'Reveal'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      {settlingSoon && (
+        <p
+          className="warn"
+          title="Once the game hits SETTLED, resolveOrder reverts with GameNotActive forever -- no retry fixes it."
+        >
+          Game ends in {formatCountdown(secondsUntilSettle)} — typical proof time is ~9 min, this order may not
+          resolve in time.
+        </p>
       )}
+      {status && <p className="muted">{status}</p>}
     </div>
   );
 }

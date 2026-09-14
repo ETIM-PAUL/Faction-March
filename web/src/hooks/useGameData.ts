@@ -21,6 +21,7 @@ export interface FactionStat {
   defaultCount: bigint;
   dueBlock: bigint;
   inDefault: boolean;
+  claimableYield: bigint;
 }
 
 export interface GameData {
@@ -85,12 +86,13 @@ export function useGameData(gameId: bigint | null, intervalMs = 5000): GameData 
 
         const factions: FactionStat[] = await Promise.all(
           [1, 2, 3].map(async (faction) => {
-            const [headcount, creditLimit, availableCredit, discountBps, credit] = await Promise.all([
+            const [headcount, creditLimit, availableCredit, discountBps, credit, claimableYield] = await Promise.all([
               march.factionHeadcount(gameId, faction),
               chest.creditLimit(gameId, faction),
               chest.availableCredit(gameId, faction),
               chest.discountBps(gameId, faction),
               chest.factionCredit(gameId, faction),
+              chest.claimableYield(gameId, faction),
             ]);
             const territory = zones.filter((z) => z.owner === faction).length;
             const inDefault: boolean = await chest.isInDefault(gameId, faction);
@@ -107,6 +109,7 @@ export function useGameData(gameId: bigint | null, intervalMs = 5000): GameData 
               defaultCount: credit.defaultCount,
               dueBlock: credit.dueBlock,
               inDefault,
+              claimableYield,
             };
           })
         );

@@ -98,7 +98,7 @@ export function ZoneMap({ gameId, game }: { gameId: bigint | null; game: GameDat
       <div className="zone-grid">
         {game.zones.map((zone) => (
           <div key={zone.zoneId} className="zone" style={{ ['--zone-color' as string]: factionColor(zone.owner) }}>
-            <div className="zone-id">Zone {zone.zoneId}</div>
+            <div className="zone-id">Zone {zone.zoneId + 1}</div>
             <div className="zone-owner" style={{ color: factionColor(zone.owner) }}>
               {factionName(zone.owner)}
             </div>
@@ -114,7 +114,7 @@ export function ZoneMap({ gameId, game }: { gameId: bigint | null; game: GameDat
         <ul className="history-list">
           {history.map((e) => (
             <li key={e.txHash + e.zoneId}>
-              Zone {e.zoneId}: {factionName(e.previousOwner)} → {factionName(e.newOwner)} ({e.survivors.toString()} survivors)
+              Zone {e.zoneId + 1}: {factionName(e.previousOwner)} → {factionName(e.newOwner)} ({e.survivors.toString()} survivors)
             </li>
           ))}
         </ul>

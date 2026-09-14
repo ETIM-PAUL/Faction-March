@@ -173,6 +173,19 @@
   },
   {
     "type": "function",
+    "name": "YIELD_SHARE_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "availableCredit",
     "inputs": [
       {
@@ -226,6 +239,48 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "claimYield",
+    "inputs": [
+      {
+        "name": "gameId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "faction",
+        "type": "uint8",
+        "internalType": "enum FactionMarch.Faction"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "claimableYield",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "outputs": [
@@ -659,6 +714,62 @@
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "YieldAccrued",
+    "inputs": [
+      {
+        "name": "gameId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "faction",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum FactionMarch.Faction"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "YieldClaimed",
+    "inputs": [
+      {
+        "name": "gameId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "faction",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum FactionMarch.Faction"
+      },
+      {
+        "name": "claimant",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "BorrowTransferFailed",
     "inputs": []
@@ -729,6 +840,11 @@
   },
   {
     "type": "error",
+    "name": "NoYieldToClaim",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotFactionMember",
     "inputs": [
       {
@@ -767,6 +883,11 @@
   {
     "type": "error",
     "name": "RefundFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "YieldTransferFailed",
     "inputs": []
   },
   {

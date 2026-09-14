@@ -3,12 +3,15 @@ import type { useWallet } from '../hooks/useWallet';
 import type { TrackedOrder } from '../hooks/useOrders';
 import type { GameData } from '../hooks/useGameData';
 import { useDoomedOrders, MAX_UNITS_PER_ORDER } from '../hooks/useDoomedOrders';
+import { useChestLedger } from '../hooks/useChestLedger';
 import { getAttestedHeight, getBatchProof, getProofForTx } from '../lib/proofBuilder';
-import { proofGateContract } from '../lib/contracts';
+import { proofGateContract, factionMarchContract, warChestContract, orderBookContract } from '../lib/contracts';
 import { creditcoinReadProvider } from '../lib/providers';
-import { CREDITCOIN_CHAIN_ID } from '../config';
-import { shortAddress, formatCtc } from '../lib/format';
+import { CREDITCOIN_CHAIN_ID, SEPOLIA_CHAIN_ID, TYPICAL_MARCH_TIME_MS } from '../config';
+import { shortAddress, formatCtc, factionName, factionColor, formatCountdown } from '../lib/format';
 import { describeError } from '../lib/errors';
+import { loadPendingReveals, removePendingReveal, type PendingReveal } from '../lib/commitReveal';
+import { useCountdown } from '../hooks/useCountdown';
 
 const BATCH_RANGE_BLOCKS = 1000; // matches the precompile's MAX_BATCH_RANGE
 const MAX_BATCH_SIZE = 10; // matches ProofGate.MAX_BATCH_SIZE
@@ -33,6 +36,18 @@ export function CourierBoard({
   const [batchStatus, setBatchStatus] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [chestFeePerOrder, setChestFeePerOrder] = useState<bigint | null>(null);
+  const [pendingReveals, setPendingReveals] = useState<PendingReveal[]>([]);
+  const [revealBusyNonce, setRevealBusyNonce] = useState<string | null>(null);
+  const [revealStatus, setRevealStatus] = useState<string | null>(null);
+  const ledger = useChestLedger(gameId);
+
+  // Revealing is what starts the provability clock (ProofGate only accepts proofs of
+  // OrderRevealed, never the commit -- Attestcoin can't attest to something that hasn't
+  // happened yet), and resolveOrder has no grace period past settleBlock. So the "am I
+  // cutting it close" warning belongs here, at reveal time, not back at commit time in the
+  // order composer -- a commit can sit unrevealed indefinitely with no clock running at all.
+  const secondsUntilSettle = useCountdown(game.settleBlock, game.ccBlockNumber);
+  const revealSettlingSoon = game.state === 1 && secondsUntilSettle > 0 && secondsUntilSettle * 1000 < TYPICAL_MARCH_TIME_MS;
 
   // CHEST_FEE_PER_ORDER is immutable -- fetch once, not on every poll tick.
   useEffect(() => {
@@ -41,6 +56,40 @@ export function CourierBoard({
       .then((v: bigint) => setChestFeePerOrder(v))
       .catch(() => setChestFeePerOrder(null));
   }, []);
+
+  // Reveal now lives here rather than as a standalone action in the order composer -- it's
+  // presented as the first step of getting an order proven, not a free-floating choice made
+  // well ahead of (and disconnected from) attestation. Pure local state (the salt only ever
+  // lives in this browser), reloaded whenever the connected wallet changes.
+  useEffect(() => {
+    setPendingReveals(wallet.address ? loadPendingReveals(wallet.address) : []);
+  }, [wallet.address]);
+
+  // Only the original committer's own wallet can call OrderBook.revealOrder (commitments are
+  // keyed per-address on-chain) -- so this only ever shows the connected wallet's own
+  // commits, never another commander's. Once mined, useOrders' own Sepolia log scan picks up
+  // the resulting OrderRevealed event within one poll and the order joins the table below on
+  // its own, waiting for attestation like any other.
+  async function revealOrder(reveal: PendingReveal) {
+    if (!wallet.address) return;
+    setRevealBusyNonce(reveal.nonce);
+    setRevealStatus(null);
+    try {
+      if (wallet.chainId !== SEPOLIA_CHAIN_ID) await wallet.switchToSepolia();
+      const signer = await wallet.getSigner();
+      const orderBook = orderBookContract(signer);
+      const tx = await orderBook.revealOrder(reveal.nonce, reveal.units, reveal.salt);
+      setRevealStatus(`Revealing: ${tx.hash}. Waiting for it to mine on Sepolia…`);
+      await tx.wait(1);
+      removePendingReveal(wallet.address, reveal.nonce);
+      setPendingReveals(loadPendingReveals(wallet.address));
+      setRevealStatus(`Revealed (${tx.hash}) — it'll appear below once attested, ready to submit for proof.`);
+    } catch (err) {
+      setRevealStatus(describeError(err));
+    } finally {
+      setRevealBusyNonce(null);
+    }
+  }
 
   const pending = orders.filter((o) => !o.resolved);
   const pageCount = Math.max(1, Math.ceil(pending.length / PAGE_SIZE));
@@ -68,12 +117,25 @@ export function CourierBoard({
     };
   }, []);
 
+  // ProofGate now requires msg.value to match the *discounted* fee exactly -- flat
+  // CHEST_FEE_PER_ORDER only holds when the order's own commander has zero territory.
+  // Discount is keyed on that commander's faction, read live (it can change zone to zone,
+  // order to order -- there's no single "the" discount for a courier proving mixed orders).
+  async function discountedFeeFor(order: TrackedOrder): Promise<bigint> {
+    if (!chestFeePerOrder || chestFeePerOrder === 0n || gameId === null) return 0n;
+    const march = factionMarchContract(creditcoinReadProvider);
+    const chest = warChestContract(creditcoinReadProvider);
+    const faction: bigint = await march.commanderFaction(gameId, order.commander);
+    const discountBps: bigint = await chest.discountBps(gameId, faction);
+    return chestFeePerOrder - (chestFeePerOrder * discountBps) / 10000n;
+  }
+
   async function claim(order: TrackedOrder) {
     setBusyKey(order.key);
     setStatusByKey((s) => ({ ...s, [order.key]: 'Fetching proof…' }));
     try {
       if (wallet.chainId !== CREDITCOIN_CHAIN_ID) await wallet.switchToCreditcoin();
-      const proof = await getProofForTx(order.sepoliaTxHash);
+      const [proof, fee] = await Promise.all([getProofForTx(order.sepoliaTxHash), discountedFeeFor(order)]);
       setStatusByKey((s) => ({ ...s, [order.key]: 'Submitting to ProofGate…' }));
       const signer = await wallet.getSigner();
       const gate = proofGateContract(signer);
@@ -84,7 +146,7 @@ export function CourierBoard({
         proof.merkleProof.siblings,
         proof.continuityProof.lowerEndpointDigest,
         proof.continuityProof.roots,
-        { value: chestFeePerOrder ?? 0n }
+        { value: fee }
       );
       setStatusByKey((s) => ({ ...s, [order.key]: `Submitted ${tx.hash}, waiting…` }));
       await tx.wait();
@@ -119,7 +181,10 @@ export function CourierBoard({
       setBatchStatus('Submitting batch to ProofGate…');
       const signer = await wallet.getSigner();
       const gate = proofGateContract(signer);
-      const totalFee = (chestFeePerOrder ?? 0n) * BigInt(batch.length);
+      // Each order's commander can sit in a different discount tier, so the batch fee is a
+      // per-order sum, not fee-per-order times count — must match ProofGate's own sum exactly.
+      const fees = await Promise.all(batch.map((o) => discountedFeeFor(o)));
+      const totalFee = fees.reduce((a, b) => a + b, 0n);
       const tx = await gate.submitOrderProofBatch(
         proof.heights,
         proof.encodedTxs,
@@ -147,9 +212,72 @@ export function CourierBoard({
         <span className="panel-eyebrow">no privileged role — anyone can carry a proof</span>
       </div>
       {chestFeePerOrder !== null && chestFeePerOrder > 0n && (
-        <p className="muted" title="Nets against the bounty — a successful proof still leaves you ahead.">
-          Fee {formatCtc(chestFeePerOrder)} CTC → war chest
-        </p>
+        <div className="field-row">
+          <span className="pill mono" title="Nets against the bounty — a successful proof still leaves you ahead">
+            proof fee {formatCtc(chestFeePerOrder)} CTC/order
+          </span>
+          <span className="pill mono" title="Total raised for this game's war chest by couriers proving orders">
+            raised via proofs {formatCtc(ledger.depositedByProofs)} CTC
+          </span>
+        </div>
+      )}
+      {chestFeePerOrder !== null && chestFeePerOrder > 0n && game.factions.length > 0 && (
+        <div className="field-row" title="Zones held by an order's own commander discount that order's proof fee, applied live at submission — 3/6/9 zones held -> 5%/10%/20% off">
+          {game.factions.map((f) => (
+            <span key={f.faction} className="pill mono" style={{ color: factionColor(f.faction) }}>
+              {factionName(f.faction)} {f.territory} zone{f.territory === 1 ? '' : 's'}
+              {f.discountBps > 0n ? ` → ${Number(f.discountBps) / 100}% off` : ' → no discount yet'}
+            </span>
+          ))}
+        </div>
+      )}
+      {pendingReveals.length > 0 && (
+        <div className="section-gap">
+          <h3
+            style={{ margin: '0 0 6px' }}
+            title="Only the connected wallet's own commits show here — only the original committer can reveal them. Units stay hidden until you choose to reveal, right before getting the order proven."
+          >
+            Your commits awaiting reveal
+          </h3>
+          {revealSettlingSoon && (
+            <p
+              className="warn"
+              title="ProofGate only accepts proofs of the reveal, never the commit, and resolveOrder has no grace period past settleBlock -- reveal now and there may not be enough active time left for the ~9 min attestation lag plus submitting proof."
+            >
+              Game ends in {formatCountdown(secondsUntilSettle)} — typical proof time is ~9 min after reveal, revealing
+              now may not resolve in time.
+            </p>
+          )}
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Game</th>
+                  <th>Zone</th>
+                  <th>Units</th>
+                  <th>Committed</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingReveals.map((r) => (
+                  <tr key={r.nonce}>
+                    <td className="num">{r.gameId}</td>
+                    <td className="num">{r.zoneId + 1}</td>
+                    <td className="num">{r.units}</td>
+                    <td className="muted">{new Date(r.committedAtMs).toLocaleTimeString()}</td>
+                    <td>
+                      <button onClick={() => revealOrder(r)} disabled={revealBusyNonce === r.nonce || !wallet.address}>
+                        {revealBusyNonce === r.nonce ? 'Revealing…' : 'Reveal'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {revealStatus && <p className="muted">{revealStatus}</p>}
+        </div>
       )}
       {pending.length === 0 ? (
         <p className="muted">Nothing waiting on a courier.</p>
@@ -187,11 +315,11 @@ export function CourierBoard({
                       />
                     </td>
                     <td className="mono">{shortAddress(o.commander)}</td>
-                    <td className="num">{o.zoneId}</td>
+                    <td className="num">{o.zoneId + 1}</td>
                     <td className="num">{o.sepoliaBlock}</td>
                     <td>
                       {doomReason === 'invalid-zone' ? (
-                        <span className="pill error" title={`Zone ${o.zoneId} doesn't exist (0–${game.zoneCount - 1})`}>
+                        <span className="pill error" title={`Zone ${o.zoneId + 1} doesn't exist (1–${game.zoneCount})`}>
                           invalid zone
                         </span>
                       ) : doomReason === 'exceeds-unit-cap' ? (

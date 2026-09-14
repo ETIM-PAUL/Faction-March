@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { parseEther } from 'ethers';
 import type { useWallet } from '../hooks/useWallet';
 import type { GameData } from '../hooks/useGameData';
+import { useChestLedger } from '../hooks/useChestLedger';
 import { warChestContract } from '../lib/contracts';
 import { creditcoinReadProvider } from '../lib/providers';
 import { CREDITCOIN_CHAIN_ID } from '../config';
@@ -33,6 +34,7 @@ export function WarChestPanel({
   const [status, setStatus] = useState<string | null>(null);
   const [repaymentWindowBlocks, setRepaymentWindowBlocks] = useState<bigint | null>(null);
   const [reputation, setReputation] = useState<Reputation | null>(null);
+  const ledger = useChestLedger(gameId);
 
   // REPAYMENT_WINDOW_BLOCKS is immutable -- fetch once, not on every poll tick.
   useEffect(() => {
@@ -117,6 +119,15 @@ export function WarChestPanel({
     });
   }
 
+  async function claimYield() {
+    if (gameId === null || myFaction === null) return;
+    await withChest(async (chest) => {
+      const tx = await chest.claimYield(gameId, myFaction);
+      await tx.wait();
+      setStatus('Yield claimed.');
+    });
+  }
+
   if (gameId === null) return null;
 
   return (
@@ -124,6 +135,20 @@ export function WarChestPanel({
       <div className="panel-header">
         <h2>War chest</h2>
         <span className="panel-eyebrow mono">{formatCtc(game.chestBalance)} CTC on hand</span>
+      </div>
+      <div className="field-row">
+        <span className="pill mono" title="Direct funding via 'Fund chest' below">
+          deposited {formatCtc(ledger.depositedByUsers)}
+        </span>
+        <span className="pill mono" title="Per-order fee couriers pay when submitting a proof (ProofGate.CHEST_FEE_PER_ORDER)">
+          from proofs {formatCtc(ledger.depositedByProofs)}
+        </span>
+        <span className="pill mono" title="Debt paid back by a faction, returned to the chest">
+          repaid {formatCtc(ledger.repaidTotal)}
+        </span>
+        <span className="pill mono" title="Currently lent out to factions, not available to borrow again until repaid">
+          borrowed out {formatCtc(ledger.borrowedTotal)}
+        </span>
       </div>
       <div className="table-scroll">
         <table className="data-table">
@@ -135,6 +160,7 @@ export function WarChestPanel({
               <th title="Scales with territory held; −30% per lifetime default, even once repaid">Credit limit</th>
               <th>Available</th>
               <th>Borrowed</th>
+              <th title="30% of every deposit and proof fee, split live by current territory — claimable below">Yield</th>
               <th title={`Repay in full within ${repaymentWindowBlocks ?? '…'} blocks of borrowing, or the line defaults automatically`}>
                 Repay by
               </th>
@@ -151,9 +177,14 @@ export function WarChestPanel({
                   </td>
                   <td className="num">{f.territory}</td>
                   <td className="num">{(Number(f.discountBps) / 100).toFixed(1)}%</td>
-                  <td className="num">{formatCtc(f.creditLimit)}</td>
-                  <td className="num">{formatCtc(f.availableCredit)}</td>
-                  <td className="num">{formatCtc(f.borrowed)}</td>
+                  {/* 8 decimals here, not the usual 5 -- this table is precise credit
+                      accounting, and a draw/discount small enough to round away at 5
+                      decimals (e.g. limit 0.00200 vs. available 0.001998, both "0.00200" at
+                      5dp) would make a real borrow look like it never happened. */}
+                  <td className="num">{formatCtc(f.creditLimit, 8)}</td>
+                  <td className="num">{formatCtc(f.availableCredit, 8)}</td>
+                  <td className="num">{formatCtc(f.borrowed, 8)}</td>
+                  <td className="num">{formatCtc(f.claimableYield, 8)}</td>
                   <td className="num">
                     {f.borrowed === 0n ? (
                       '—'
@@ -187,6 +218,19 @@ export function WarChestPanel({
 
       {myFaction !== null && myFaction > 0 ? (
         <>
+          {(() => {
+            const mine = game.factions.find((f) => f.faction === myFaction);
+            return mine && mine.claimableYield > 0n ? (
+              <div className="field-row">
+                <span className="pill mono" title="30% of every deposit/proof fee since it was last claimed, earned by holding territory">
+                  yield available: {formatCtc(mine.claimableYield, 8)} CTC
+                </span>
+                <button onClick={claimYield} disabled={busy || !wallet.address}>
+                  Claim yield
+                </button>
+              </div>
+            ) : null;
+          })()}
           <div className="field-row">
             <label>
               Borrow (CTC)

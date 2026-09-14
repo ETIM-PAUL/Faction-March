@@ -123,8 +123,11 @@ contract WarChestTest is Test {
     }
 
     function test_borrow_transfersCtcAndSetsDueBlock() public {
-        _capture(alice, 0, 5);
+        // Deposit before any capture -- zero territory means zero yield split, so the full
+        // 10 ether lands in chestBalance and this test can assert round numbers. The yield
+        // split itself has its own dedicated tests below.
         chest.depositToChest{value: 10 ether}(GAME_ID);
+        _capture(alice, 0, 5);
 
         uint256 before = alice.balance;
         vm.prank(alice);
@@ -140,8 +143,9 @@ contract WarChestTest is Test {
     // --- repay ---
 
     function test_repay_reducesDebtAndRefillsChest() public {
-        _capture(alice, 0, 5);
+        // Deposit before any capture -- see test_borrow_transfersCtcAndSetsDueBlock.
         chest.depositToChest{value: 10 ether}(GAME_ID);
+        _capture(alice, 0, 5);
         vm.prank(alice);
         chest.borrow(GAME_ID, FactionMarch.Faction.Alpha, 0.0005 ether);
 
@@ -275,6 +279,96 @@ contract WarChestTest is Test {
 
         (,,, uint256 samaritanRepaid) = chest.reputations(goodSamaritan);
         assertEq(samaritanRepaid, 1, "permissionless repayment is credited to whoever actually paid");
+    }
+
+    // --- territory yield ---
+
+    function test_depositToChest_noTerritory_allStaysInChest() public {
+        chest.depositToChest{value: 1 ether}(GAME_ID);
+
+        assertEq(chest.chestBalance(GAME_ID), 1 ether, "nobody holds a zone yet -- nothing to split");
+        assertEq(chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Alpha)), 0);
+        assertEq(chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Beta)), 0);
+    }
+
+    function test_depositToChest_splitsYieldByTerritory() public {
+        _capture(alice, 0, 5);
+        _capture(alice, 1, 5); // Alpha: 2 zones
+        _capture(bob, 2, 5); // Beta: 1 zone -- 3 held total
+
+        chest.depositToChest{value: 3 ether}(GAME_ID);
+
+        uint256 yieldPortion = (3 ether * chest.YIELD_SHARE_BPS()) / 10_000; // 0.9 ether
+        assertEq(chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Alpha)), (yieldPortion * 2) / 3, "2/3 of the split");
+        assertEq(chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Beta)), (yieldPortion * 1) / 3, "1/3 of the split");
+        assertEq(chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Gamma)), 0, "holds nothing -- earns nothing");
+        assertEq(chest.chestBalance(GAME_ID), 3 ether - yieldPortion, "the other 70% still backs the credit line");
+    }
+
+    function test_claimYield_transfersAndZeroesBalance() public {
+        _capture(alice, 0, 5);
+        chest.depositToChest{value: 1 ether}(GAME_ID);
+
+        uint256 accrued = chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Alpha));
+        assertGt(accrued, 0);
+
+        uint256 before = alice.balance;
+        vm.prank(alice);
+        chest.claimYield(GAME_ID, FactionMarch.Faction.Alpha);
+
+        assertEq(alice.balance, before + accrued);
+        assertEq(chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Alpha)), 0);
+    }
+
+    function test_revert_claimYield_notFactionMember() public {
+        _capture(alice, 0, 5);
+        chest.depositToChest{value: 1 ether}(GAME_ID);
+
+        vm.prank(bob);
+        vm.expectRevert(abi.encodeWithSelector(WarChest.NotFactionMember.selector, bob, FactionMarch.Faction.Alpha));
+        chest.claimYield(GAME_ID, FactionMarch.Faction.Alpha);
+    }
+
+    function test_revert_claimYield_nothingToClaim() public {
+        vm.prank(alice);
+        vm.expectRevert(WarChest.NoYieldToClaim.selector);
+        chest.claimYield(GAME_ID, FactionMarch.Faction.Alpha);
+    }
+
+    /// @notice The anti-snipe property, proven rather than asserted from the design comment
+    /// alone: capturing a zone *after* a deposit has already been split earns nothing from
+    /// that deposit, because the split already happened against the territory that existed
+    /// at that instant.
+    function test_claimYield_capturingAfterDepositEarnsNothingFromThatDeposit() public {
+        _capture(bob, 0, 5); // Beta holds the only zone anyone owns
+        chest.depositToChest{value: 1 ether}(GAME_ID);
+        uint256 betaShare = chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Beta));
+        assertGt(betaShare, 0);
+
+        _capture(alice, 1, 5); // Alpha captures afterward -- too late for this deposit
+
+        assertEq(chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Alpha)), 0);
+        assertEq(chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Beta)), betaShare, "unchanged by a later capture");
+    }
+
+    function test_repay_doesNotSplitYieldTwice() public {
+        _capture(alice, 0, 5);
+        chest.depositToChest{value: 1 ether}(GAME_ID);
+        vm.prank(alice);
+        chest.borrow(GAME_ID, FactionMarch.Faction.Alpha, 0.0005 ether);
+
+        uint256 yieldBeforeRepay = chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Alpha));
+        uint256 chestBeforeRepay = chest.chestBalance(GAME_ID);
+
+        vm.prank(alice);
+        chest.repay{value: 0.0005 ether}(GAME_ID, FactionMarch.Faction.Alpha);
+
+        assertEq(
+            chest.claimableYield(GAME_ID, uint8(FactionMarch.Faction.Alpha)),
+            yieldBeforeRepay,
+            "repayment principal already passed through the split once, on the way in"
+        );
+        assertEq(chest.chestBalance(GAME_ID), chestBeforeRepay + 0.0005 ether, "full principal returns to the chest, undiluted");
     }
 
     // --- access control ---

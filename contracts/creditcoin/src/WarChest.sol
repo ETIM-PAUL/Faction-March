@@ -8,19 +8,22 @@ import {FactionMarch} from "./FactionMarch.sol";
 /// proven territory, played rather than pitched. Reads territory straight from FactionMarch
 /// (no changes needed there — this is a pure consumer) and is wired for reputation integrity
 /// from ProofGate the same way FactionMarch is (Phase 7's one-shot setProofGate pattern).
-/// @dev Two deliberate, documented simplifications, both inherited from Phase 8's bounty
-/// design for the same underlying reason — there is no audited, trustless way yet to move
-/// the Sepolia ETH order fee onto Creditcoin (Attestcoin's writability primitives are still
-/// pre-audit):
-///   1. The chest's CTC comes from a permissionless depositToChest(), not literally the
-///      bridged Sepolia fee.
-///   2. "Territory-tiered discount on order cost" cannot reduce what's paid on Sepolia —
-///      Sepolia has no way to read Creditcoin state (Attestcoin readability runs one
-///      direction: Creditcoin proves Sepolia, never the reverse). discountBps() is a
-///      correctly-computed, honestly-labelled view for a future frontend to display; the
-///      territory signal it's built from does real work elsewhere, in creditLimit().
-/// Everything else — the credit line, its limit, defaults, and reputation — is the real
-/// mechanic, not a stand-in.
+/// @dev One deliberate, documented simplification, inherited from Phase 8's bounty design:
+/// there is no audited, trustless way yet to move the Sepolia ETH order fee onto Creditcoin
+/// (Attestcoin's writability primitives are still pre-audit), so the chest's CTC comes from
+/// a permissionless depositToChest(), not literally the bridged Sepolia fee. depositToChest
+/// itself is called two ways: directly (a manual top-up) and by ProofGate, once per proven
+/// order, for that order's (discount-adjusted) chest fee — see CHEST_FEE_PER_ORDER.
+///
+/// Territory does three things now, not two: discountBps cheapens getting your own orders
+/// proven (wired into ProofGate's fee calc), creditLimit scales borrowing power, and — the
+/// direct payout — every depositToChest call immediately splits YIELD_SHARE_BPS of what
+/// just arrived across factions by *current* territory, credited to claimableYield. The
+/// other two are indirect (cheaper fees, bigger loan ceiling with default risk); this one is
+/// real CTC for holding ground, funded by the game's own activity rather than freshly
+/// minted. Splitting at the instant funds land, not on a claim snapshot, is what makes
+/// sniping a zone right before a big deposit unprofitable for that deposit specifically: you
+/// only ever earn a share of CTC that arrives after you already held the zone.
 contract WarChest {
     FactionMarch public immutable FACTION_MARCH;
 
@@ -36,6 +39,13 @@ contract WarChest {
     uint256 public constant MAX_DRAW_BPS_OF_CHEST = 2000; // 20%
     /// @notice Blocks a draw has to be repaid within before the line is considered defaulted.
     uint64 public immutable REPAYMENT_WINDOW_BLOCKS;
+    /// @notice Fraction of every depositToChest inflow immediately split across factions by
+    /// current territory (see claimableYield) instead of backing the shared credit line. The
+    /// remainder (70%) still funds chestBalance -- this trades some collective borrowing
+    /// power for a direct, ongoing reward the current territory-tiered discount/credit-limit
+    /// incentives don't provide. Debt repayments are exempt (see repay): that CTC already
+    /// passed through this split once, when it first entered the chest.
+    uint256 public constant YIELD_SHARE_BPS = 3000; // 30%
 
     uint256 public constant TIER_1_ZONES = 3;
     uint256 public constant TIER_2_ZONES = 6;
@@ -66,8 +76,12 @@ contract WarChest {
     mapping(uint256 => uint256) public chestBalance;
     mapping(uint256 => mapping(uint8 => FactionCredit)) public factionCredit;
     mapping(address => Reputation) public reputations;
+    /// @notice CTC a faction has earned from territory yield but not yet claimed.
+    mapping(uint256 => mapping(uint8 => uint256)) public claimableYield;
 
     event ChestFunded(uint256 indexed gameId, address indexed funder, uint256 amount);
+    event YieldAccrued(uint256 indexed gameId, FactionMarch.Faction indexed faction, uint256 amount);
+    event YieldClaimed(uint256 indexed gameId, FactionMarch.Faction indexed faction, address indexed claimant, uint256 amount);
     event CreditBorrowed(
         uint256 indexed gameId, FactionMarch.Faction indexed faction, address indexed borrower, uint256 amount, uint64 dueBlock
     );
@@ -86,6 +100,8 @@ contract WarChest {
     error InsufficientChestBalance(uint256 requested, uint256 available);
     error BorrowTransferFailed();
     error RefundFailed();
+    error NoYieldToClaim();
+    error YieldTransferFailed();
 
     constructor(address factionMarch, uint64 repaymentWindowBlocks) {
         FACTION_MARCH = FactionMarch(factionMarch);
@@ -107,10 +123,65 @@ contract WarChest {
         _;
     }
 
-    /// @notice Tops up a game's chest. Permissionless.
+    /// @notice Tops up a game's chest. Permissionless. Called directly for a manual deposit,
+    /// or by ProofGate once per proven order for that order's chest fee -- either way,
+    /// YIELD_SHARE_BPS of what arrives is split across factions by territory before the rest
+    /// lands in chestBalance.
     function depositToChest(uint256 gameId) external payable {
-        chestBalance[gameId] += msg.value;
         emit ChestFunded(gameId, msg.sender, msg.value);
+        uint256 yieldPortion = (msg.value * YIELD_SHARE_BPS) / 10_000;
+        uint256 distributed = _distributeYield(gameId, yieldPortion);
+        chestBalance[gameId] += msg.value - distributed;
+    }
+
+    /// @dev Splits `yieldPortion` across Alpha/Beta/Gamma proportional to zones held *right
+    /// now*, crediting claimableYield. Returns what was actually distributed so the caller
+    /// can route any remainder (no territory yet, or integer-division dust) back into
+    /// chestBalance instead of losing it. One pass over zones, not one call to
+    /// territoryHeld() per faction, to keep this from tripling the O(zoneCount) cost on
+    /// every single deposit -- zoneCount is bounded by FactionMarch.MAX_ZONE_COUNT (100), so
+    /// this is a real, disclosed gas cost per proof, not an unbounded one.
+    function _distributeYield(uint256 gameId, uint256 yieldPortion) internal returns (uint256 distributed) {
+        if (yieldPortion == 0) return 0;
+        (, uint16 zoneCount,,) = FACTION_MARCH.games(gameId);
+        if (zoneCount == 0) return 0;
+
+        uint256[4] memory heldBy; // index by Faction enum; [0] (None) never accrues
+        uint256 totalHeld;
+        for (uint16 z = 0; z < zoneCount; z++) {
+            (FactionMarch.Faction owner,) = FACTION_MARCH.zones(gameId, z);
+            if (owner != FactionMarch.Faction.None) {
+                heldBy[uint8(owner)]++;
+                totalHeld++;
+            }
+        }
+        if (totalHeld == 0) return 0;
+
+        for (uint8 f = 1; f <= 3; f++) {
+            if (heldBy[f] == 0) continue;
+            uint256 share = (yieldPortion * heldBy[f]) / totalHeld;
+            if (share == 0) continue;
+            claimableYield[gameId][f] += share;
+            distributed += share;
+            emit YieldAccrued(gameId, FactionMarch.Faction(f), share);
+        }
+    }
+
+    /// @notice Claims a faction's accrued territory yield. Only a member of `faction` can
+    /// claim, but funds go to whoever calls -- same "no admin key, permissionless within
+    /// membership" shape as borrow/repay.
+    function claimYield(uint256 gameId, FactionMarch.Faction faction) external {
+        if (FACTION_MARCH.commanderFaction(gameId, msg.sender) != faction) {
+            revert NotFactionMember(msg.sender, faction);
+        }
+        uint256 amount = claimableYield[gameId][uint8(faction)];
+        if (amount == 0) revert NoYieldToClaim();
+        claimableYield[gameId][uint8(faction)] = 0;
+
+        emit YieldClaimed(gameId, faction, msg.sender, amount);
+
+        (bool ok,) = msg.sender.call{value: amount}("");
+        if (!ok) revert YieldTransferFailed();
     }
 
     /// @notice Zones currently held by a faction, read live from FactionMarch. O(zoneCount),
@@ -205,6 +276,9 @@ contract WarChest {
 
         if (applied > 0) {
             credit.repaidCount += 1;
+            // No yield split here, deliberately -- this CTC already passed through
+            // _distributeYield once, when it first entered the chest as a deposit or proof
+            // fee. Splitting it again on the way back would tax the same principal twice.
             chestBalance[gameId] += applied;
             reputations[msg.sender].debtsRepaid += 1;
             emit CreditRepaid(gameId, faction, msg.sender, applied);

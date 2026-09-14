@@ -6,7 +6,7 @@ undercollateralised credit line backed by proven territory. Built for
 **BUIDL CTC 2026 Fall**, themed on the Attestcoin Protocol (formerly USC).
 
 - **Demo video:** TODO — add before the submission deadline.
-- **Deck / whitepaper:** TODO — add before the submission deadline.
+- **Deck / whitepaper:** https://drive.google.com/file/d/1ISdR8eNg7nR64Xh-mWYRWNQw9BmXSwQP/view?usp=sharing
 
 An Attestcoin-secured territory war: orders are Sepolia transactions, and
 they only take effect once someone proves them to Creditcoin CC3. This
@@ -222,13 +222,62 @@ commander — commanders only ever pay on Sepolia, in ETH, and there's no way
 to charge a CC3-side fee to an address that only acted on Sepolia — so it
 nets against `BOUNTY_PER_ORDER` (0.0001 CTC) rather than stacking a new cost
 on top of the Sepolia fee; deliberately kept smaller than the bounty so a
-courier who successfully lands proofs stays net-positive overall. Enforced
-per-order even inside a batch (`msg.value` must equal
-`CHEST_FEE_PER_ORDER × count`), and routed to each order's own `gameId`
-individually rather than summed into one deposit — correct regardless, and
-specifically matters if `FactionMarch`'s current one-active-game-at-a-time
-rule is ever relaxed, since nothing here assumes every order in a batch
-shares a game.
+courier who successfully lands proofs stays net-positive overall. Routed to
+each order's own `gameId` individually rather than summed into one deposit —
+correct regardless, and specifically matters if `FactionMarch`'s current
+one-active-game-at-a-time rule is ever relaxed, since nothing here assumes
+every order in a batch shares a game.
+
+**That fee itself scales down with the territory the order's own commander
+has already helped win.** `ProofGate._discountedChestFee` reads the same
+zones-held tiers `WarChest.discountBps` already exposed for display
+(`TIER_1`/`2`/`3` at 3/6/9 zones → 5%/10%/20% off) and actually applies the
+discount to `CHEST_FEE_PER_ORDER` at the moment a proof is submitted, rather
+than leaving it a number the UI shows and nothing spends — the concrete,
+courier-board-facing use case the discount was missing before. It's read
+per order, live, against whichever faction that order's commander currently
+belongs to (not a snapshot from game start, and not tied to `msg.sender` —
+the courier proving the order is very often not its commander), so a batch
+mixing orders from factions at different tiers charges a genuinely different
+`msg.value` per order; a single `IncorrectChestFee(sent, required)` check
+against the *exact* discounted sum (`==`, not `>=`) covers both the
+single-order and batch paths. Deliberately read after `resolveOrder` inside
+the same call, so a batch that captures a faction's 3rd zone mid-batch
+already earns that discount on later orders in the *same* batch — the tier
+is truth-as-of-execution, not truth-as-of-submission. Enforced per-order even
+inside a batch (`msg.value` must equal the sum of each order's own
+discounted fee, computed in a first pass before any deposit is made in a
+second — an earlier single-pass version could drain `msg.value` on early
+orders and hard-revert with no error data on a later one; see
+`spikes/FINDINGS.md` Phase 16). This is separate from — and stacks with
+nothing from — the reputation-driven `creditLimit` multiplier above; the two
+read the same `zonesHeld` state but spend it in unrelated ways.
+
+**Discount and credit limit are both indirect — territory yield is the
+direct payout.** Neither existing incentive actually pays a faction
+anything: the discount only cheapens getting *your own* orders proven, and
+`creditLimit` is a bigger loan ceiling with real default risk, not free
+value. `WarChest.YIELD_SHARE_BPS` (30%) closes that gap. Every
+`depositToChest` call — a manual top-up or a courier's chest fee, same entry
+point either way — immediately splits 30% of whatever just arrived across
+Alpha/Beta/Gamma proportional to *current* zones held, one pass over the
+board (`_distributeYield`), and credits each faction's `claimableYield`; the
+other 70% still lands in `chestBalance` to back the credit line, so more
+territory now trades some collective borrowing power for a direct, ongoing
+reward. Splitting at the instant CTC arrives — not on a claim snapshot — is
+what makes capturing a zone right before a big deposit unprofitable for that
+specific deposit: a faction only ever earns a share of CTC that lands after
+it already held the zone (`test_claimYield_capturingAfterDepositEarnsNothingFromThatDeposit`
+proves this, not just asserts it). `claimYield(gameId, faction)` pays out to
+whoever calls, restricted to a member of that faction — same "no admin key,
+permissionless within membership" shape as `borrow`/`repay`. Debt
+repayments are deliberately exempt from the split (`repay` credits
+`chestBalance` directly): that CTC already passed through it once, on the
+way in, and splitting it again would tax the same principal twice. The
+one-pass-over-zones design keeps this from tripling `territoryHeld`'s
+already-documented O(zoneCount) cost on every single deposit — a real,
+disclosed gas cost per proof (zoneCount is bounded at `MAX_ZONE_COUNT`, 100),
+not an unbounded one.
 
 The frontend (`web/`) is a zone map with a live join/active countdown and
 ownership history, a commit/reveal order composer (with a local "commits
@@ -243,11 +292,12 @@ permanently once a game goes ACTIVE), or a single order over the 10-unit
 per-order cap (`ExceedsMaxUnitsPerOrder`, unraisable by waiting — the order
 composer also warns, non-blockingly, when your live pool is merely
 *temporarily* short of a request that's still under that cap). There's also a war
-chest/credit panel showing each faction's live due-block countdown and
-default consequences, a connected wallet's own on-chain reputation pulled
-straight from `WarChest.reputations`, and — the single most important
-screen — the in-flight panel's live ticking clock, so the UI never implies
-instant resolution.
+chest/credit panel showing each faction's live due-block countdown, default
+consequences, and claimable territory yield with a one-click `claimYield`
+button, a connected wallet's own on-chain reputation pulled straight from
+`WarChest.reputations`, and — the single most important screen — the
+in-flight panel's live ticking clock, so the UI never implies instant
+resolution.
 
 **Faction chat** is real, per-`(gameId, faction)` private chat, backed by
 Supabase — but membership is never taken on Supabase's word. `public.faction_messages`
@@ -269,11 +319,11 @@ rejected with a 403, confirmed live, not assumed. See
 | Contract | Network | Address |
 |---|---|---|
 | `OrderBook` | Sepolia | `0xa9842871a176feeA29590de1A71DE829940FfC36` — commit/reveal (`commitOrder`/`revealOrder`), orderFee 0.0005 ETH paid at commit, treasury `0x9d4eF81F5225107049ba08F69F598D97B31ea644` |
-| `FactionMarch` | Creditcoin CC3 | `0x3FA9CEeD76511372De1396e66D1561e8d5e5af3D` — game board, `resolveOrder` restricted to `ProofGate` below; only one game may be OPEN/ACTIVE at a time (`createGame` reverts with `PreviousGameNotSettled` otherwise), open duration capped at `MAX_OPEN_DURATION_BLOCKS` (3600 blocks, ~15h at CC3's measured 15s/block), active duration capped at `MAX_ACTIVE_DURATION_BLOCKS` (28,800 blocks, ~5 days), single order capped at `MAX_UNITS_PER_ORDER` (10, independent of the 500-unit total pool) |
-| `WarChest` | Creditcoin CC3 | `0x27A3fb6e3A576F15e8463b174415F1Ec51BB9f19` — credit line + reputation, reads territory from `FactionMarch` above, repayment window 5000 blocks |
-| `ProofGate` | Creditcoin CC3 | `0x3684c468B9Bd5fF998706294C1cA07f49609083a` — hardened, wired to `FactionMarch` and `WarChest` above, allowlists `OrderBook` above (checks for `OrderRevealed`, not the old `OrderPlaced`), staleness window 1200 blocks, bounty 0.0001 CTC/order (pool funded with 0.01 CTC), chest fee 0.00005 CTC/order deposited into `WarChest` on every successful proof |
+| `FactionMarch` | Creditcoin CC3 | `0xba618275A71ea261cAbA7294e742589723aEC1AE` — game board, `resolveOrder` restricted to `ProofGate` below; only one game may be OPEN/ACTIVE at a time (`createGame` reverts with `PreviousGameNotSettled` otherwise), open duration capped at `MAX_OPEN_DURATION_BLOCKS` (3600 blocks, ~15h at CC3's measured 15s/block), active duration capped at `MAX_ACTIVE_DURATION_BLOCKS` (28,800 blocks, ~5 days), single order capped at `MAX_UNITS_PER_ORDER` (10, independent of the 500-unit total pool) |
+| `WarChest` | Creditcoin CC3 | `0xcd3A69f231c93f37A2A7f61D5B5F58850850a045` — credit line + reputation, reads territory from `FactionMarch` above, repayment window 5000 blocks, `discountBps` tiers (3/6/9 zones → 5%/10%/20%) spent by `ProofGate` below, and `YIELD_SHARE_BPS` (30%) of every `depositToChest` inflow — a direct deposit or a proof fee — split live across factions by *current* territory into `claimableYield`, on top of the discount and credit-limit incentives |
+| `ProofGate` | Creditcoin CC3 | `0x8ff40DBA12240379e431eD7a927D16413717F6B8` — hardened, wired to `FactionMarch` and `WarChest` above, allowlists `OrderBook` above (checks for `OrderRevealed`, not the old `OrderPlaced`), staleness window 1200 blocks, bounty 0.0001 CTC/order (pool funded with 0.01 CTC), chest fee 0.00005 CTC/order, discounted per order by the order's own commander's live `WarChest.discountBps`, deposited into `WarChest` on every successful proof; accepts `msg.value` at or above the true required total and refunds the excess rather than requiring an exact match (see *On over/underpayment* in the contract's own NatSpec) |
 
-Superseded addresses, kept only as a record of earlier iterations (see `spikes/FINDINGS.md`): `ProofGate` unguarded, no emitter check `0x296Ecf33a2c64F7A858133E60aC5d732Cd1b654c`; `ProofGate` hardened, before `FactionMarch` wiring `0x9fe147c23600CFcB7dd0DAEc4670d96868142744`; `FactionMarch` no access control `0x871F283Cf322F0206FE6424EE01529E186270eb5`; `ProofGate`/`FactionMarch` wired, no bounty/batching `0x0739BA644E4a25e529B04b870b54958c4C25131d` / `0x3181cFd3D6927656797208C20848c2B623bbf223`; `ProofGate`/`FactionMarch` bounty/batching, no `WarChest` `0x1BDA513AC071A6736Bb5569499CE9a7D96c3E0bc` / `0x92b474811aC11EbfFdcc21fc240993b46909ae69`; `ProofGate`/`FactionMarch`/`WarChest` wired, no game-exclusivity rule (any number of games could be OPEN/ACTIVE at once) `0xcEd503d0Eeb04C13F8974CaA85d06A22f0441C88` / `0xEf7Cc55BD1bF5c836D4CcD0c3d108415a6Bc18Ba` / `0x54C3901F43d1ab2694357D304e6dAc1671Cf10a2`; `ProofGate`/`FactionMarch`/`WarChest` wired with exclusivity + duration caps, but default game durations assumed an unverified ~1 block/sec (actually 15s/block — see `spikes/FINDINGS.md`) `0x58ef7793d058d7F2e11DCe57747bEf6D1d487778` / `0xB8Fde830fF968E56528539505243da22ce59b628` / `0xF1eD07B6A8406E2b0B7D8FE072C64740aCdf24C4`; `ProofGate`/`FactionMarch`/`WarChest` wired with correct durations, but no per-order unit cap and no chest-fee mechanism yet `0x5F979DaafCc5D3324Ea446e9DcEa829aCe4aE0e1` / `0xE3c75BD8B7029175f909141ffD2639D8478C9ea4` / `0xc15b39Ecd7068B2a2409f5833389Dd4c7E34B080`; `ProofGate`/`FactionMarch`/`WarChest` wired with per-order cap + chest fee, but `OrderBook` was still single-phase `placeOrder` (no unit secrecy) `0xdB29051641c7257BF8ca45a68B16505C254dC6d1` / `0x1561d62A22F74BA2098202Dd915669e2631a5e88` / `0x44db1f17611214Fc57a5D6aA116d3852FB12aA37`, `OrderBook` `0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F`.
+Superseded addresses, kept only as a record of earlier iterations (see `spikes/FINDINGS.md`): `ProofGate` unguarded, no emitter check `0x296Ecf33a2c64F7A858133E60aC5d732Cd1b654c`; `ProofGate` hardened, before `FactionMarch` wiring `0x9fe147c23600CFcB7dd0DAEc4670d96868142744`; `FactionMarch` no access control `0x871F283Cf322F0206FE6424EE01529E186270eb5`; `ProofGate`/`FactionMarch` wired, no bounty/batching `0x0739BA644E4a25e529B04b870b54958c4C25131d` / `0x3181cFd3D6927656797208C20848c2B623bbf223`; `ProofGate`/`FactionMarch` bounty/batching, no `WarChest` `0x1BDA513AC071A6736Bb5569499CE9a7D96c3E0bc` / `0x92b474811aC11EbfFdcc21fc240993b46909ae69`; `ProofGate`/`FactionMarch`/`WarChest` wired, no game-exclusivity rule (any number of games could be OPEN/ACTIVE at once) `0xcEd503d0Eeb04C13F8974CaA85d06A22f0441C88` / `0xEf7Cc55BD1bF5c836D4CcD0c3d108415a6Bc18Ba` / `0x54C3901F43d1ab2694357D304e6dAc1671Cf10a2`; `ProofGate`/`FactionMarch`/`WarChest` wired with exclusivity + duration caps, but default game durations assumed an unverified ~1 block/sec (actually 15s/block — see `spikes/FINDINGS.md`) `0x58ef7793d058d7F2e11DCe57747bEf6D1d487778` / `0xB8Fde830fF968E56528539505243da22ce59b628` / `0xF1eD07B6A8406E2b0B7D8FE072C64740aCdf24C4`; `ProofGate`/`FactionMarch`/`WarChest` wired with correct durations, but no per-order unit cap and no chest-fee mechanism yet `0x5F979DaafCc5D3324Ea446e9DcEa829aCe4aE0e1` / `0xE3c75BD8B7029175f909141ffD2639D8478C9ea4` / `0xc15b39Ecd7068B2a2409f5833389Dd4c7E34B080`; `ProofGate`/`FactionMarch`/`WarChest` wired with per-order cap + chest fee, but `OrderBook` was still single-phase `placeOrder` (no unit secrecy) `0xdB29051641c7257BF8ca45a68B16505C254dC6d1` / `0x1561d62A22F74BA2098202Dd915669e2631a5e88` / `0x44db1f17611214Fc57a5D6aA116d3852FB12aA37`, `OrderBook` `0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F`; `ProofGate`/`FactionMarch`/`WarChest` wired with commit-reveal + real chest fee, but the fee was flat (no discount) and `FactionMarch` had not yet gained `MAX_UNITS_PER_ORDER` on this particular deployment `0x3684c468B9Bd5fF998706294C1cA07f49609083a` / `0x3FA9CEeD76511372De1396e66D1561e8d5e5af3D` / `0x27A3fb6e3A576F15e8463b174415F1Ec51BB9f19`; `ProofGate`/`FactionMarch`/`WarChest` wired with the mandatory discount, but before territory yield existed — holding territory only earned a cheaper fee and a bigger (riskier) credit limit, no direct payout `0xEef2B7f161cF1B5F59BA360CE52F32A26A4e87C3` / `0xa02050aF59AF343e2FbB8cA0c11F637442Ef7a06` / `0x1E48018D1545f308c1AF7c4Ad3213aFDbDE741E6`; `ProofGate`/`FactionMarch`/`WarChest` wired with territory yield, but the chest fee still required an *exact* `msg.value` match — a same-transaction discount (a batch capturing its own qualifying zone) could make a courier's pre-flight estimate legitimately overshoot, hard-reverting a harmless overpayment instead of refunding it `0x785D5e6FFc6f163D7341f6Fda19FA2781C668b46` / `0x4B3A63385a837F93B336A71C9dCF085c26d7ba99` / `0xb58C0FfeC5D7DF67788646209c106d187F4eA568`.
 
 ## Networks
 
