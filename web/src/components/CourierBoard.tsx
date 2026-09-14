@@ -131,7 +131,7 @@ export function CourierBoard({
       );
       setBatchStatus(`Submitted ${tx.hash}, waiting…`);
       await tx.wait();
-      setBatchStatus(`Batch resolved — ${batch.length} orders in one CC3 transaction, one shared continuity proof.`);
+      setBatchStatus(`Batch resolved — ${batch.length} orders, one transaction.`);
       setSelected(new Set());
     } catch (err) {
       setBatchStatus(describeError(err));
@@ -147,10 +147,8 @@ export function CourierBoard({
         <span className="panel-eyebrow">no privileged role — anyone can carry a proof</span>
       </div>
       {chestFeePerOrder !== null && chestFeePerOrder > 0n && (
-        <p className="muted">
-          Each proof costs {formatCtc(chestFeePerOrder)} CTC, deposited straight into that order's game's war chest —
-          real funds, moved by a real action, growing the chest in lockstep with actual play. Nets against the
-          bounty, so a successful proof still leaves you ahead overall.
+        <p className="muted" title="Nets against the bounty — a successful proof still leaves you ahead.">
+          Fee {formatCtc(chestFeePerOrder)} CTC → war chest
         </p>
       )}
       {pending.length === 0 ? (
@@ -193,22 +191,22 @@ export function CourierBoard({
                     <td className="num">{o.sepoliaBlock}</td>
                     <td>
                       {doomReason === 'invalid-zone' ? (
-                        <span className="pill error">
-                          zone {o.zoneId} doesn't exist (0–{game.zoneCount - 1}) — will always revert
+                        <span className="pill error" title={`Zone ${o.zoneId} doesn't exist (0–${game.zoneCount - 1})`}>
+                          invalid zone
                         </span>
                       ) : doomReason === 'exceeds-unit-cap' ? (
-                        <span className="pill error">
-                          {o.units} units exceeds the {MAX_UNITS_PER_ORDER}-per-order cap — will always revert
+                        <span className="pill error" title={`${o.units} exceeds the ${MAX_UNITS_PER_ORDER}-per-order cap`}>
+                          exceeds unit cap
                         </span>
                       ) : doomReason === 'not-joined' ? (
-                        <span className="pill error">commander never joined — will always revert</span>
+                        <span className="pill error">commander not joined</span>
                       ) : attested ? (
                         <span className="pill attested">attested</span>
                       ) : (
                         <span className="pill waiting">waiting for attestation</span>
                       )}
                       {!isDoomed && batchable > 0 && (
-                        <span className="muted" title="Select the checkboxes below and submit together in one batch">
+                        <span className="muted" title="Select checkboxes to submit together in one batch">
                           {' '}
                           · batchable ×{batchable}
                         </span>
@@ -243,9 +241,7 @@ export function CourierBoard({
       {pending.length > 0 && (
         <div className="field-row section-gap">
           <span className="muted">
-            {selected.size === 0
-              ? `Select up to ${MAX_BATCH_SIZE} attested orders above to prove them together in one CC3 transaction sharing a single continuity proof.`
-              : `${selected.size} order${selected.size === 1 ? '' : 's'} selected.`}
+            {selected.size === 0 ? `Select up to ${MAX_BATCH_SIZE} to batch.` : `${selected.size} selected.`}
           </span>
           <button onClick={claimBatch} disabled={selected.size === 0 || batchBusy || !wallet.address}>
             {batchBusy ? 'Working…' : `Submit batch (${selected.size})`}

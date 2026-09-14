@@ -249,6 +249,19 @@ straight from `WarChest.reputations`, and — the single most important
 screen — the in-flight panel's live ticking clock, so the UI never implies
 instant resolution.
 
+**Faction chat** is real, per-`(gameId, faction)` private chat, backed by
+Supabase — but membership is never taken on Supabase's word. `public.faction_messages`
+has RLS enabled with zero grants to `anon`/`authenticated`, so the table is
+unreachable through the public API no matter what — confirmed directly:
+`curl` with the anon key gets `permission denied for table faction_messages`,
+not an empty result. The only way in is the `faction-chat` Edge Function,
+which verifies an EIP-191 signature over a short-lived login message, then
+reads `FactionMarch.commanderFaction(gameId, address)` live from Creditcoin
+CC3 before minting a session scoped to whatever faction that call actually
+returns — a validly-signed request from a wallet that never joined is
+rejected with a 403, confirmed live, not assumed. See
+`supabase/functions/faction-chat/` and `supabase/migrations/`.
+
 ---
 
 ## Deployed contracts
@@ -296,7 +309,8 @@ denominated in CC3 blocks — multiply by 15s for wall-clock time.
 | `contracts/source/` | Foundry project for Ethereum Sepolia (`OrderBook.sol`) |
 | `contracts/creditcoin/` | Foundry project for Creditcoin CC3 (`ProofGate.sol`, `FactionMarch.sol`, `WarChest.sol`) |
 | `courier/` | Node/TS proof-delivery scripts — `place-and-relay.ts` is the reference courier |
-| `web/` | React + Vite frontend — no backend, reads/writes contracts directly from the browser |
+| `web/` | React + Vite frontend — reads/writes contracts directly from the browser; the one exception is faction chat, which talks to `supabase/` |
+| `supabase/` | Faction chat backend: `migrations/` (locked-down `faction_messages` table) and `functions/faction-chat/` (the only thing with a key that can reach it) |
 | `spikes/` | Feasibility research scripts and findings |
 
 ## Setup

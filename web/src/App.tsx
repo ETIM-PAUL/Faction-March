@@ -9,6 +9,7 @@ import { OrderComposer } from './components/OrderComposer';
 import { InFlightPanel } from './components/InFlightPanel';
 import { CourierBoard } from './components/CourierBoard';
 import { WarChestPanel } from './components/WarChestPanel';
+import { FactionChat } from './components/FactionChat';
 import { factionMarchContract } from './lib/contracts';
 import { creditcoinReadProvider } from './lib/providers';
 
@@ -59,6 +60,7 @@ export default function App() {
           <CourierBoard wallet={wallet} orders={orders} game={game} gameId={gameId} />
         </div>
         <WarChestPanel wallet={wallet} gameId={gameId} game={game} myFaction={myFaction} />
+        <FactionChat wallet={wallet} gameId={gameId} myFaction={myFaction} />
       </main>
     </div>
   );

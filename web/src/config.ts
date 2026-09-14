@@ -12,6 +12,12 @@ export const SEPOLIA_PUBLIC_RPC = 'https://ethereum-sepolia-rpc.publicnode.com';
 export const CREDITCOIN_PUBLIC_RPC = 'https://rpc.cc3-testnet.creditcoin.network';
 export const PROOF_BUILDER_URL = 'https://prover.cc3-testnet.creditcoin.network';
 
+// Faction chat backend. The function itself is the only thing that can reach
+// faction_messages (RLS denies anon/authenticated entirely) -- see supabase/migrations and
+// supabase/functions/faction-chat. This URL is public by construction, same as the rest of
+// this file; it grants no access on its own.
+export const FACTION_CHAT_URL = 'https://obdtwpduhnmeateukgcf.supabase.co/functions/v1/faction-chat';
+
 export const ADDRESSES = {
   orderBook: '0xa9842871a176feeA29590de1A71DE829940FfC36',
   factionMarch: '0x3FA9CEeD76511372De1396e66D1561e8d5e5af3D',

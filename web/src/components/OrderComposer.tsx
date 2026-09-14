@@ -159,10 +159,7 @@ export function OrderComposer({
       savePendingReveal(wallet.address, reveal);
       setPendingReveals(loadPendingReveals(wallet.address));
 
-      setStatus(
-        `Committed on Sepolia (${tx.hash}) — units are hidden until you reveal. Reveal whenever you're ready below; ` +
-          `a courier can only prove it after that.`
-      );
+      setStatus(`Committed (${tx.hash}) — reveal whenever you're ready, below.`);
     } catch (err) {
       setStatus(describeError(err));
     } finally {
@@ -183,9 +180,7 @@ export function OrderComposer({
       await tx.wait(1);
       removePendingReveal(wallet.address, reveal.nonce);
       setPendingReveals(loadPendingReveals(wallet.address));
-      setStatus(
-        `Revealed on Sepolia (${tx.hash}) — now in flight, see the panel below. This can take several minutes to prove; that wait is the mechanic, not a bug.`
-      );
+      setStatus(`Revealed (${tx.hash}) — now in flight, below.`);
     } catch (err) {
       setStatus(describeError(err));
     } finally {
@@ -197,13 +192,10 @@ export function OrderComposer({
     <div className="panel">
       <div className="panel-header">
         <h2>Dispatch an order</h2>
-        <span className="panel-eyebrow">Sepolia</span>
+        <span className="panel-eyebrow" title="Commit hides your unit count; reveal it whenever you choose to make it provable.">
+          Sepolia · commit → reveal
+        </span>
       </div>
-      <p className="muted">
-        Two steps, on purpose: <strong>commit</strong> locks in a zone and pays the fee without exposing how many
-        units you're sending; <strong>reveal</strong>, whenever you choose, exposes the real count and makes it
-        provable. Nobody — not an opponent, not a courier — can see your units until you reveal them.
-      </p>
       <div className="field-row">
         <label>
           Zone
@@ -237,50 +229,30 @@ export function OrderComposer({
           {busy ? 'Committing…' : 'Commit order'}
         </button>
       </div>
-      <p className="muted">
-        Fixed fee: {orderFeeEth ? `${orderFeeEth} ETH` : '…'} on Sepolia — flat regardless of units; combat power is
-        rationed by a {MAX_UNITS_PER_ORDER}-unit-per-order cap (and a slower-regenerating 500-unit total pool), not
-        by how much you pay.
-        {game.zoneCount > 0 && ` This game has zones 0–${maxZone}.`}
-        {wallet.address && gameId !== null && !notJoined && (
-          <> You currently have {availableUnits ?? '…'} unit{availableUnits === 1 ? '' : 's'} available.</>
-        )}
+      <p className="muted" title="Flat fee regardless of units; a 500-unit pool refills 1/block.">
+        Fee {orderFeeEth ? `${orderFeeEth} ETH` : '…'} · max {MAX_UNITS_PER_ORDER}/order
+        {game.zoneCount > 0 && ` · zones 0–${maxZone}`}
+        {wallet.address && gameId !== null && !notJoined && ` · ${availableUnits ?? '…'} available`}
       </p>
       {zoneOutOfRange && <p className="error">Zone {zoneId} doesn't exist — pick 0–{maxZone}.</p>}
-      {exceedsUnitCap && (
-        <p className="error">
-          {units} exceeds the {MAX_UNITS_PER_ORDER}-unit per-order cap — no wait ever raises that ceiling, so this
-          could never be proven. Split it into multiple orders of {MAX_UNITS_PER_ORDER} or fewer instead.
-        </p>
-      )}
+      {exceedsUnitCap && <p className="error">Max {MAX_UNITS_PER_ORDER} units per order.</p>}
       {!exceedsUnitCap && insufficientRightNow && (
-        <p className="muted">
-          Only {availableUnits} available right now — this specific order won't resolve until your pool catches up
-          (1/block). March time (~9 min typical) usually covers that, but if the proof lands sooner than your pool
-          regenerates, it will revert.
+        <p className="muted" title="Refills 1/block — march time usually covers the wait.">
+          Only {availableUnits} available right now.
         </p>
       )}
       {doomedByMembership ? (
-        <p className="error">
-          You haven't joined game {gameId} and its join window is closed — this order could never be proven. Wait
-          for it to settle, then join a fresh game before it goes active.
-        </p>
+        <p className="error">Join window closed — this order can't be proven. Wait for the game to settle.</p>
       ) : (
-        notJoined && (
-          <p className="muted">
-            You haven't joined game {gameId} yet — join before its window closes or this order won't be provable.
-          </p>
-        )
+        notJoined && <p className="muted">Join game {gameId} before its window closes.</p>
       )}
       {status && <p className="muted">{status}</p>}
 
       {pendingReveals.length > 0 && (
         <div className="section-gap">
-          <h3 style={{ margin: '0 0 6px' }}>Your commits awaiting reveal</h3>
-          <p className="muted" style={{ margin: '0 0 8px' }}>
-            Stored only in this browser — the salt never left your device, so only you can reveal these. Clearing
-            site data loses them permanently; there's no recovery.
-          </p>
+          <h3 style={{ margin: '0 0 6px' }} title="Stored only in this browser — clearing site data loses them permanently.">
+            Your commits awaiting reveal
+          </h3>
           <div className="table-scroll">
             <table className="data-table">
               <thead>

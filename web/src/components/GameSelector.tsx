@@ -94,7 +94,7 @@ export function GameSelector({
         })
         .find((p: { name: string } | null) => p?.name === 'GameCreated');
       if (created) setGameId(created.args.gameId as bigint);
-      setStatus(`Game created with ${zoneCount} zones — open for joining for ~${DEFAULT_OPEN_DURATION_BLOCKS} CC3 blocks.`);
+      setStatus(`Game created (${zoneCount} zones).`);
     } catch (err) {
       setStatus(describeError(err));
     } finally {
@@ -157,16 +157,12 @@ export function GameSelector({
         Join game {gameId?.toString() ?? ''}
       </button>
       {blockedByUnsettledGame && (
-        <span className="muted">
-          Only one game can run at a time — game {gameCount.toString()} is still {latestGameState === 0 ? 'open for joining' : 'active'}.
-          Wait for it to settle before creating a new one.
+        <span className="muted" title="Only one game can run at a time">
+          Game {gameCount.toString()} is still {latestGameState === 0 ? 'open' : 'active'} — wait for it to settle.
         </span>
       )}
       {!blockedByUnsettledGame && joinWindowClosed && (
-        <span className="muted">
-          Game {gameId?.toString()}'s join window has closed (it's {game.state === 1 ? 'ACTIVE' : 'SETTLED'}) — new
-          players need a fresh game.
-        </span>
+        <span className="muted">Join window closed ({game.state === 1 ? 'ACTIVE' : 'SETTLED'}) — start a new game.</span>
       )}
       {myFaction !== null && myFaction > 0 && (
         <span className="pill faction" style={{ color: factionColor(myFaction) }}>

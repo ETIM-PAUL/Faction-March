@@ -499,3 +499,31 @@ button.ghost:hover:not(:disabled) {
   padding-left: 8px !important;
   font-weight: 600;
 }
+
+/* ---------- faction chat ---------- */
+
+.chat-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding-right: 4px;
+}
+
+.chat-message {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+
+.chat-sender {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.chat-body {
+  word-break: break-word;
+}

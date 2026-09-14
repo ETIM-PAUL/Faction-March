@@ -125,31 +125,19 @@ export function WarChestPanel({
         <h2>War chest</h2>
         <span className="panel-eyebrow mono">{formatCtc(game.chestBalance)} CTC on hand</span>
       </div>
-      <p className="muted">
-        Territory (zones a faction currently owns) drives everything below: <strong>Discount</strong> rises in tiers
-        at 3/6/9 zones held; <strong>Credit limit</strong> scales directly with zones held (more territory, more you
-        can borrow against it) and gets a permanent penalty per past default, even after it's repaid.
-      </p>
-      <p className="muted">
-        Borrowing has no separate collateral — territory itself is the collateral, read live from
-        <code> FactionMarch</code>. Once you draw, you must repay in full within{' '}
-        <strong>{repaymentWindowBlocks !== null ? `${repaymentWindowBlocks.toString()} blocks` : '…'}</strong> of
-        that draw or the line defaults automatically — no one has to call anything to trigger it, it's computed live
-        from the block number, same as everything else here. A default immediately zeroes your credit limit until
-        repaid, and even after clearing it, permanently cuts your multiplier by 30% <em>per lifetime default</em> —
-        it does not reset.
-      </p>
       <div className="table-scroll">
         <table className="data-table">
           <thead>
             <tr>
               <th>Faction</th>
               <th>Territory</th>
-              <th>Discount</th>
-              <th>Credit limit</th>
+              <th title="Rises in tiers at 3/6/9 zones held">Discount</th>
+              <th title="Scales with territory held; −30% per lifetime default, even once repaid">Credit limit</th>
               <th>Available</th>
               <th>Borrowed</th>
-              <th>Repay by</th>
+              <th title={`Repay in full within ${repaymentWindowBlocks ?? '…'} blocks of borrowing, or the line defaults automatically`}>
+                Repay by
+              </th>
               <th>Defaults</th>
             </tr>
           </thead>
@@ -219,24 +207,15 @@ export function WarChestPanel({
           </div>
         </>
       ) : (
-        wallet.address && (
-          <p className="muted">
-            Borrow/repay only show once you've joined this specific game — `WarChest.borrow` needs a faction
-            (`NotFactionMember` otherwise), and membership is per-game, not per-wallet. You haven't joined game{' '}
-            {gameId?.toString()}.
-          </p>
-        )
+        wallet.address && <p className="muted">Join game {gameId?.toString()} to borrow or repay.</p>
       )}
       {status && <p className="muted">{status}</p>}
 
       {wallet.address && reputation && (
         <div className="section-gap">
-          <h3 style={{ margin: '0 0 6px' }}>Your reputation</h3>
-          <p className="muted" style={{ margin: '0 0 8px' }}>
-            Read live from <code>WarChest.reputations({wallet.address.slice(0, 6)}…{wallet.address.slice(-4)})</code>{' '}
-            — written only by <code>ProofGate</code>, in the same transaction as every resolution, so it's exactly as
-            trustworthy as the proofs themselves.
-          </p>
+          <h3 style={{ margin: '0 0 6px' }} title="Written only by ProofGate, in the same transaction as every resolution.">
+            Your reputation
+          </h3>
           <div className="field-row">
             <span className="pill mono" title="Highest proven Sepolia nonce + 1 — a lower bound, not a true count: Creditcoin can't observe an order issued on Sepolia but never proven.">
               orders issued (lower bound): {reputation.ordersIssuedLowerBound.toString()}

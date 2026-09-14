@@ -80,7 +80,9 @@ export function ZoneMap({ gameId, game }: { gameId: bigint | null; game: GameDat
   return (
     <div className="panel hero-panel">
       <div className="panel-header">
-        <h2>Zone map — game {gameId.toString()}</h2>
+        <h2 title="Attacker needs strictly more units than the garrison to capture; a tie favours the defender.">
+          Zone map — game {gameId.toString()}
+        </h2>
         <span className={`stamp ${stateClass}`}>{stateLabel}</span>
         {game.state === 0 && (
           <span className="muted mono" title="Time left to join before this game goes ACTIVE">
@@ -93,11 +95,6 @@ export function ZoneMap({ gameId, game }: { gameId: bigint | null; game: GameDat
           </span>
         )}
       </div>
-      <p className="muted">
-        Zones {game.zoneCount > 0 ? `0–${game.zoneCount - 1}` : ''}. <strong>Garrison</strong> is the defending units
-        currently stationed there — an attacker needs strictly more units than the garrison to capture a zone (a tie
-        favours whoever already holds it); attacking your own zone reinforces it instead.
-      </p>
       <div className="zone-grid">
         {game.zones.map((zone) => (
           <div key={zone.zoneId} className="zone" style={{ ['--zone-color' as string]: factionColor(zone.owner) }}>
