@@ -24,13 +24,17 @@ contract ProofGateTest is Test {
     );
     bytes4 constant TX_INDEX_SELECTOR = bytes4(keccak256("calculateTxIndex((bytes32,(bytes32,bool)[]))"));
     bytes4 constant GET_LATEST_SELECTOR = bytes4(keccak256("get_latest_attestation_height_and_hash(uint64)"));
-    bytes32 constant ORDER_PLACED_SIGNATURE = keccak256("OrderPlaced(address,uint256,uint16,uint32,uint64)");
+    bytes32 constant ORDER_PLACED_SIGNATURE = keccak256("OrderRevealed(address,uint256,uint16,uint32,uint64)");
 
     uint64 constant SOURCE_CHAIN_KEY = 1;
     uint64 constant STALENESS_WINDOW = 50;
     uint64 constant BLOCK_HEIGHT = 100;
     uint256 constant GAME_ID = 1;
     uint256 constant BOUNTY_PER_ORDER = 0.0001 ether;
+    // Zero here so every existing call site below doesn't need a msg.value change -- the
+    // chest-fee mechanic itself gets dedicated tests against a separately-deployed ProofGate
+    // with a real nonzero fee (see "chest fee" section near the bottom of this file).
+    uint256 constant CHEST_FEE_PER_ORDER = 0;
 
     ProofGate gate;
     FactionMarch march;
@@ -46,7 +50,9 @@ contract ProofGateTest is Test {
 
         march = new FactionMarch();
         chest = new WarChest(address(march), 5000);
-        gate = new ProofGate(orderBook, address(march), address(chest), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER);
+        gate = new ProofGate(
+            orderBook, address(march), address(chest), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER, CHEST_FEE_PER_ORDER
+        );
         march.setProofGate(address(gate));
         chest.setProofGate(address(gate));
 
@@ -109,22 +115,22 @@ contract ProofGateTest is Test {
     }
 
     function test_relaysDecodedOrderAndResolvesOnFactionMarch() public {
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(1));
         _mockTxIndex(root, 0);
 
         vm.expectEmit(true, true, true, true, address(gate));
-        emit ProofGate.OrderArrived(commander, GAME_ID, 3, 50, 0);
+        emit ProofGate.OrderArrived(commander, GAME_ID, 3, 5, 0);
         _submit(encodedTx, root, BLOCK_HEIGHT);
 
         (FactionMarch.Faction owner, uint256 garrison) = march.zones(GAME_ID, 3);
         assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha));
-        assertEq(garrison, 50);
+        assertEq(garrison, 5);
     }
 
     function test_revert_forgedEmitter() public {
         address attacker = makeAddr("attacker");
-        bytes memory encodedTx = _encodeTx(attacker, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(attacker, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(2));
         _mockTxIndex(root, 0);
 
@@ -135,7 +141,7 @@ contract ProofGateTest is Test {
     function test_revert_wrongTopic0() public {
         bytes32[] memory topics = _orderTopics(commander, GAME_ID, 3);
         topics[0] = keccak256("SomethingElse(address)");
-        bytes memory encodedTx = _encodeTx(orderBook, topics, abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, topics, abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(3));
         _mockTxIndex(root, 0);
 
@@ -148,7 +154,7 @@ contract ProofGateTest is Test {
         topics[0] = ORDER_PLACED_SIGNATURE;
         topics[1] = bytes32(uint256(uint160(commander)));
         topics[2] = bytes32(GAME_ID);
-        bytes memory encodedTx = _encodeTx(orderBook, topics, abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, topics, abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(4));
         _mockTxIndex(root, 0);
 
@@ -158,7 +164,7 @@ contract ProofGateTest is Test {
 
     function test_revert_crossGameOrder() public {
         // gameId 99 doesn't exist on FactionMarch at all — only game 1 was created (see setUp).
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, 99, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, 99, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(5));
         _mockTxIndex(root, 0);
 
@@ -167,7 +173,7 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_exactReplay() public {
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(6));
         _mockTxIndex(root, 0);
 
@@ -187,7 +193,7 @@ contract ProofGateTest is Test {
         bytes32 rootA = bytes32(uint256(0xA));
         _mockTxIndex(rootA, 2);
 
-        bytes memory orderC = _encodeTx(orderBook, _orderTopics(otherCommander, GAME_ID, 2), abi.encode(uint32(20), uint64(0)), 1);
+        bytes memory orderC = _encodeTx(orderBook, _orderTopics(otherCommander, GAME_ID, 2), abi.encode(uint32(6), uint64(0)), 1);
         bytes32 rootC = bytes32(uint256(0xC));
         _mockTxIndex(rootC, 5);
 
@@ -196,7 +202,7 @@ contract ProofGateTest is Test {
         _submit(orderA, rootA, BLOCK_HEIGHT);
 
         vm.expectEmit(true, true, true, true, address(gate));
-        emit ProofGate.OrderArrived(otherCommander, GAME_ID, 2, 20, 0);
+        emit ProofGate.OrderArrived(otherCommander, GAME_ID, 2, 6, 0);
         _submit(orderC, rootC, BLOCK_HEIGHT);
 
         vm.expectRevert(
@@ -206,7 +212,7 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_staleOrder() public {
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(7));
         _mockTxIndex(root, 0);
 
@@ -228,7 +234,7 @@ contract ProofGateTest is Test {
     function test_neverCouriered_orderExpiresSafely_noStateChangeAndUnitsUnaffected() public {
         uint256 unitsBefore = march.currentUnits(GAME_ID, commander);
 
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(99));
         _mockTxIndex(root, 0);
 
@@ -268,7 +274,7 @@ contract ProofGateTest is Test {
     }
 
     function test_revert_transactionDidNotSucceed() public {
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 0);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 0);
         bytes32 root = bytes32(uint256(8));
         _mockTxIndex(root, 0);
 
@@ -344,7 +350,7 @@ contract ProofGateTest is Test {
     function test_courier_paidBountyOnSuccess() public {
         gate.fundBounties{value: 1 ether}();
 
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(9));
         _mockTxIndex(root, 0);
 
@@ -361,7 +367,7 @@ contract ProofGateTest is Test {
     function test_soloPlay_commanderCouriersOwnOrderAndCollectsBounty() public {
         gate.fundBounties{value: 1 ether}();
 
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(10));
         _mockTxIndex(root, 0);
 
@@ -374,7 +380,7 @@ contract ProofGateTest is Test {
 
     function test_bountySkippedWhenPoolDry_orderStillResolves() public {
         // No fundBounties() call — pool starts at 0.
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(11));
         _mockTxIndex(root, 0);
 
@@ -390,7 +396,7 @@ contract ProofGateTest is Test {
         assertEq(courier.balance, before, "no bounty paid");
         (FactionMarch.Faction owner, uint256 garrison) = march.zones(GAME_ID, 3);
         assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha), "order still resolves with a dry pool");
-        assertEq(garrison, 50);
+        assertEq(garrison, 5);
     }
 
     /// @notice Two independent courier processes race to submit the identical proof for the
@@ -399,7 +405,7 @@ contract ProofGateTest is Test {
     function test_twoCouriersRaceForSameBounty_exactlyOnePaid() public {
         gate.fundBounties{value: 1 ether}();
 
-        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(50), uint64(0)), 1);
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
         bytes32 root = bytes32(uint256(12));
         _mockTxIndex(root, 0);
 
@@ -512,5 +518,111 @@ contract ProofGateTest is Test {
 
         (FactionMarch.Faction owner,) = march.zones(GAME_ID, 5);
         assertEq(uint8(owner), uint8(FactionMarch.Faction.None), "the valid order in the same batch must not have applied either");
+    }
+
+    // --- Phase 13: chest fee -- a real, native way for the chest to grow with actual play ---
+    // Deployed with its own nonzero CHEST_FEE_PER_ORDER (the shared `gate` above keeps it at
+    // zero so every test above didn't need a msg.value change).
+
+    uint256 constant CHEST_FEE = 0.00005 ether;
+
+    /// @dev FactionMarch/WarChest's setProofGate is one-shot -- the shared setUp() already
+    /// spent it on `gate` (fee-free), so any chest-fee test that needs a real successful
+    /// resolution needs its own fresh march+chest+gate trio, not the shared ones.
+    function _freshTrioWithChestFee() internal returns (FactionMarch freshMarch, WarChest freshChest, ProofGate feeGate) {
+        freshMarch = new FactionMarch();
+        freshChest = new WarChest(address(freshMarch), 5000);
+        feeGate = new ProofGate(
+            orderBook, address(freshMarch), address(freshChest), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER, CHEST_FEE
+        );
+        freshMarch.setProofGate(address(feeGate));
+        freshChest.setProofGate(address(feeGate));
+
+        freshMarch.createGame(12, 1, 20_000);
+        vm.prank(commander);
+        freshMarch.join(GAME_ID);
+        vm.roll(block.number + 100);
+    }
+
+    function test_revert_submitOrderProof_incorrectChestFee() public {
+        ProofGate feeGate = new ProofGate(
+            orderBook, address(march), address(chest), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER, CHEST_FEE
+        );
+        // Wiring isn't even needed to prove this reverts -- the fee check runs before
+        // anything touches FactionMarch or WarChest.
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
+        INativeQueryVerifier.MerkleProofEntry[] memory siblings = new INativeQueryVerifier.MerkleProofEntry[](0);
+
+        vm.expectRevert(abi.encodeWithSelector(ProofGate.IncorrectChestFee.selector, 0, CHEST_FEE));
+        feeGate.submitOrderProof(BLOCK_HEIGHT, encodedTx, bytes32(uint256(1)), siblings, bytes32(0), new bytes32[](0));
+    }
+
+    function test_submitOrderProof_depositsChestFeeIntoWarChest() public {
+        (FactionMarch freshMarch, WarChest freshChest, ProofGate feeGate) = _freshTrioWithChestFee();
+
+        bytes memory encodedTx = _encodeTx(orderBook, _orderTopics(commander, GAME_ID, 3), abi.encode(uint32(5), uint64(0)), 1);
+        bytes32 root = bytes32(uint256(3001));
+        INativeQueryVerifier.MerkleProofEntry[] memory siblings = new INativeQueryVerifier.MerkleProofEntry[](0);
+        INativeQueryVerifier.MerkleProof memory proof = INativeQueryVerifier.MerkleProof({root: root, siblings: siblings});
+        vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(TX_INDEX_SELECTOR, proof), abi.encode(uint64(0)));
+
+        address courier = makeAddr("feeCourier");
+        vm.deal(courier, CHEST_FEE);
+        assertEq(freshChest.chestBalance(GAME_ID), 0);
+
+        vm.prank(courier);
+        feeGate.submitOrderProof{value: CHEST_FEE}(BLOCK_HEIGHT, encodedTx, root, siblings, bytes32(0), new bytes32[](0));
+
+        assertEq(freshChest.chestBalance(GAME_ID), CHEST_FEE, "courier's fee landed in this order's game's chest");
+        (FactionMarch.Faction owner,) = freshMarch.zones(GAME_ID, 3);
+        assertEq(uint8(owner), uint8(FactionMarch.Faction.Alpha), "combat still resolved in the same transaction");
+    }
+
+    function test_submitOrderProofBatch_chargesFeePerOrder_depositsIntoChest() public {
+        (, WarChest freshChest, ProofGate feeGate) = _freshTrioWithChestFee();
+
+        uint64[] memory heights = new uint64[](2);
+        bytes[] memory encodedTxs = new bytes[](2);
+        bytes32[] memory roots = new bytes32[](2);
+        INativeQueryVerifier.MerkleProofEntry[][] memory siblingsPerOrder = new INativeQueryVerifier.MerkleProofEntry[][](2);
+
+        for (uint256 i = 0; i < 2; i++) {
+            heights[i] = BLOCK_HEIGHT + uint64(i);
+            roots[i] = bytes32(uint256(4000 + i));
+            siblingsPerOrder[i] = new INativeQueryVerifier.MerkleProofEntry[](0);
+            INativeQueryVerifier.MerkleProof memory proof =
+                INativeQueryVerifier.MerkleProof({root: roots[i], siblings: siblingsPerOrder[i]});
+            vm.mockCall(BLOCK_PROVER, abi.encodeWithSelector(TX_INDEX_SELECTOR, proof), abi.encode(uint64(i)));
+            encodedTxs[i] =
+                _encodeTx(orderBook, _orderTopics(commander, GAME_ID, uint16(i)), abi.encode(uint32(1), uint64(i)), 1);
+        }
+
+        address courier = makeAddr("batchFeeCourier");
+        vm.deal(courier, CHEST_FEE * 2);
+
+        vm.prank(courier);
+        feeGate.submitOrderProofBatch{value: CHEST_FEE * 2}(
+            heights, encodedTxs, roots, siblingsPerOrder, bytes32(0), new bytes32[](0)
+        );
+
+        assertEq(freshChest.chestBalance(GAME_ID), CHEST_FEE * 2, "one fee share per order in the batch, same game here");
+    }
+
+    function test_revert_submitOrderProofBatch_incorrectChestFee() public {
+        ProofGate feeGate = new ProofGate(
+            orderBook, address(march), address(chest), SOURCE_CHAIN_KEY, STALENESS_WINDOW, BOUNTY_PER_ORDER, CHEST_FEE
+        );
+        uint64[] memory heights = new uint64[](2);
+        bytes[] memory encodedTxs = new bytes[](2);
+        bytes32[] memory roots = new bytes32[](2);
+        INativeQueryVerifier.MerkleProofEntry[][] memory siblingsPerOrder = new INativeQueryVerifier.MerkleProofEntry[][](2);
+        siblingsPerOrder[0] = new INativeQueryVerifier.MerkleProofEntry[](0);
+        siblingsPerOrder[1] = new INativeQueryVerifier.MerkleProofEntry[](0);
+
+        // Sent enough for only one order, not both.
+        vm.expectRevert(abi.encodeWithSelector(ProofGate.IncorrectChestFee.selector, CHEST_FEE, CHEST_FEE * 2));
+        feeGate.submitOrderProofBatch{value: CHEST_FEE}(
+            heights, encodedTxs, roots, siblingsPerOrder, bytes32(0), new bytes32[](0)
+        );
     }
 }

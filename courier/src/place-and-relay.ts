@@ -2,8 +2,10 @@
  * End to end in one command:
  *
  *   1. Create a game on FactionMarch if no gameId was given (Creditcoin CC3), and join it.
- *   2. Place an order on OrderBook (Sepolia).
- *   3. Wait for Creditcoin to attest the containing block.
+ *   2. Commit an order on OrderBook (Sepolia) -- units hidden -- then immediately reveal it
+ *      (this script demos the round trip, not secrecy; a real commander would wait before
+ *      revealing). The reveal transaction is what actually gets proven.
+ *   3. Wait for Creditcoin to attest the block containing the reveal.
  *   4. Generate a proof and submit it to ProofGate.submitOrderProof (Creditcoin CC3), which
  *      verifies it and calls FactionMarch.resolveOrder in the same transaction.
  *   5. Read back OrderArrived and FactionMarch's combat event, and confirm zoneId/units
@@ -17,6 +19,10 @@ import { createRequire } from 'module';
 import { ethers } from 'ethers';
 import { chainInfo, proofProvider } from '@gluwa/usc-sdk';
 import { getOrCreateGame } from './lib/game.js';
+
+function randomSalt(): string {
+  return ethers.hexlify(ethers.randomBytes(32));
+}
 
 const require = createRequire(import.meta.url);
 const orderBookArtifact = require('../../contracts/source/out/OrderBook.sol/OrderBook.json');
@@ -42,7 +48,7 @@ async function main() {
   const factionMarchAddress = need('FACTION_MARCH_ADDRESS');
 
   const zoneId = Number(process.argv[2] ?? '3');
-  const units = Number(process.argv[3] ?? '50');
+  const units = Number(process.argv[3] ?? '5'); // FactionMarch.MAX_UNITS_PER_ORDER caps a single order at 10
   const gameIdArg = process.argv[4];
 
   const sourceChainRpc = new ethers.JsonRpcProvider(sourceChainRpcUrl);
@@ -65,15 +71,16 @@ async function main() {
   }
 
   const orderFee: bigint = await orderBook.orderFee();
+  const salt = randomSalt();
+  const commitHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['uint32', 'bytes32'], [units, salt]));
 
-  console.log(`Placing order on OrderBook ${orderBookAddress}: gameId=${gameId} zoneId=${zoneId} units=${units} fee=${ethers.formatEther(orderFee)} ETH`);
-  const tx = await orderBook.placeOrder(gameId, zoneId, units, { value: orderFee });
-  console.log(`Broadcast: ${tx.hash}`);
-  const receipt = await tx.wait(1);
-  if (!receipt || receipt.status !== 1) throw new Error('placeOrder tx failed');
-  console.log(`Mined in block ${receipt.blockNumber}`);
+  console.log(`Committing order on OrderBook ${orderBookAddress}: gameId=${gameId} zoneId=${zoneId} fee=${ethers.formatEther(orderFee)} ETH (units hidden)`);
+  const commitTx = await orderBook.commitOrder(gameId, zoneId, commitHash, { value: orderFee });
+  console.log(`Broadcast: ${commitTx.hash}`);
+  const commitReceipt = await commitTx.wait(1);
+  if (!commitReceipt || commitReceipt.status !== 1) throw new Error('commitOrder tx failed');
 
-  const placedEvent = receipt.logs
+  const committedEvent = commitReceipt.logs
     .map((log: any) => {
       try {
         return orderBook.interface.parseLog(log);
@@ -81,16 +88,35 @@ async function main() {
         return null;
       }
     })
-    .find((parsed: any) => parsed?.name === 'OrderPlaced');
-  if (!placedEvent) throw new Error('OrderPlaced not found in receipt — is ORDER_BOOK_ADDRESS correct?');
+    .find((parsed: any) => parsed?.name === 'OrderCommitted');
+  if (!committedEvent) throw new Error('OrderCommitted not found in receipt — is ORDER_BOOK_ADDRESS correct?');
+  const nonce = committedEvent.args.nonce as bigint;
+
+  console.log(`Revealing order (nonce ${nonce})...`);
+  const revealTx = await orderBook.revealOrder(nonce, units, salt);
+  console.log(`Broadcast: ${revealTx.hash}`);
+  const receipt = await revealTx.wait(1);
+  if (!receipt || receipt.status !== 1) throw new Error('revealOrder tx failed');
+  console.log(`Mined in block ${receipt.blockNumber}`);
+
+  const revealedEvent = receipt.logs
+    .map((log: any) => {
+      try {
+        return orderBook.interface.parseLog(log);
+      } catch {
+        return null;
+      }
+    })
+    .find((parsed: any) => parsed?.name === 'OrderRevealed');
+  if (!revealedEvent) throw new Error('OrderRevealed not found in receipt');
   const sent = {
-    commander: placedEvent.args.commander as string,
-    gameId: placedEvent.args.gameId as bigint,
-    zoneId: Number(placedEvent.args.zoneId),
-    units: Number(placedEvent.args.units),
-    nonce: placedEvent.args.nonce as bigint,
+    commander: revealedEvent.args.commander as string,
+    gameId: revealedEvent.args.gameId as bigint,
+    zoneId: Number(revealedEvent.args.zoneId),
+    units: Number(revealedEvent.args.units),
+    nonce: revealedEvent.args.nonce as bigint,
   };
-  console.log('OrderPlaced on Sepolia:', sent);
+  console.log('OrderRevealed on Sepolia:', sent);
 
   const info = new chainInfo.PrecompileChainInfoProvider(ccRpc);
   const proofBuilder = new proofProvider.service.ProofBuilder(sourceChainKey, proofBuilderUrl);
@@ -105,14 +131,18 @@ async function main() {
 
   const courierBalanceBefore: bigint = await ccRpc.getBalance(ccWallet.address);
 
-  console.log(`Submitting proof to ProofGate ${proofGateAddress}...`);
+  const chestFeePerOrder: bigint = await proofGate.CHEST_FEE_PER_ORDER();
+  console.log(
+    `Submitting proof to ProofGate ${proofGateAddress} (chest fee: ${ethers.formatEther(chestFeePerOrder)} CTC)...`
+  );
   const verifyTx = await proofGate.submitOrderProof(
     proof.headerNumber,
     proof.txBytes,
     proof.merkleProof.root,
     proof.merkleProof.siblings,
     proof.continuityProof.lowerEndpointDigest,
-    proof.continuityProof.roots
+    proof.continuityProof.roots,
+    { value: chestFeePerOrder }
   );
   console.log(`Submitted: ${verifyTx.hash}`);
   const verifyReceipt = await verifyTx.wait();

@@ -63,10 +63,28 @@ interface IChainInfo {
 /// amount paid from a pool anyone can top up via fundBounties(), standing in for that
 /// eventual fee-funded bounty. Combat resolution never depends on the pool being funded —
 /// if it's dry, the order still resolves and the courier simply isn't paid this time.
+///
+/// On CHEST_FEE_PER_ORDER (Phase 13): the Sepolia fee still can't be bridged into CTC, but
+/// that doesn't mean the chest has to stay manually-funded forever. Every successful proof
+/// now requires the courier to attach a small native CTC fee, deposited straight into that
+/// specific order's game's chest via WarChest.depositToChest in the same transaction — real
+/// CTC, moved by a real action, growing in lockstep with actual proven gameplay instead of
+/// sitting inert until someone clicks a "fund chest" button unprompted. It's charged to the
+/// courier, not the commander, so it nets against BOUNTY_PER_ORDER rather than adding a new
+/// cost on top of the Sepolia fee; deliberately kept smaller than the bounty so a courier
+/// that successfully lands proofs stays net-positive. Enforced per-order even inside a batch
+/// (msg.value must equal CHEST_FEE_PER_ORDER * count), and routed to each order's own gameId
+/// individually rather than summed into one deposit — correct regardless, and specifically
+/// matters if FactionMarch's current one-active-game-at-a-time rule (see createGame) is ever
+/// relaxed, since nothing here assumes every order in a batch shares a gameId.
 contract ProofGate {
-    /// @dev keccak256("OrderPlaced(address,uint256,uint16,uint32,uint64)")
-    bytes32 public constant ORDER_PLACED_SIGNATURE =
-        keccak256("OrderPlaced(address,uint256,uint16,uint32,uint64)");
+    /// @dev keccak256("OrderRevealed(address,uint256,uint16,uint32,uint64)") -- the event
+    /// OrderBook's two-phase commit/reveal emits once units are actually exposed (Phase 14).
+    /// Same shape (3 indexed address/gameId/zoneId topics, units+nonce in data) as the old
+    /// single-phase OrderPlaced this used to check, so nothing else in this decode path
+    /// needed to change.
+    bytes32 public constant ORDER_REVEALED_SIGNATURE =
+        keccak256("OrderRevealed(address,uint256,uint16,uint32,uint64)");
 
     /// @notice The native precompile's hard limit on proofs per batch call.
     uint256 public constant MAX_BATCH_SIZE = 10;
@@ -78,7 +96,7 @@ contract ProofGate {
     FactionMarch public immutable FACTION_MARCH;
     WarChest public immutable WAR_CHEST;
 
-    /// @notice The only contract ProofGate accepts OrderPlaced logs from.
+    /// @notice The only contract ProofGate accepts OrderRevealed logs from.
     address public immutable ORDER_BOOK;
     /// @notice Creditcoin-internal chain key for the source chain (Sepolia = 1). Not the EVM chainId.
     uint64 public immutable SOURCE_CHAIN_KEY;
@@ -87,6 +105,10 @@ contract ProofGate {
     uint64 public immutable STALENESS_WINDOW_BLOCKS;
     /// @notice Fixed CTC bounty paid to whoever successfully lands an order's proof.
     uint256 public immutable BOUNTY_PER_ORDER;
+    /// @notice Fixed CTC fee the courier must attach per order, deposited into that order's
+    /// game's WarChest in the same transaction. Kept smaller than BOUNTY_PER_ORDER so a
+    /// successful courier nets positive overall.
+    uint256 public immutable CHEST_FEE_PER_ORDER;
 
     /// @notice Replay guard, keyed on (blockHeight, txIndex, logIndex) — never blockHeight
     /// alone (two orders can share a block) and never txHash alone (doesn't disambiguate
@@ -115,6 +137,7 @@ contract ProofGate {
     error BountyTransferFailed();
     error InvalidBatchSize(uint256 size);
     error BatchLengthMismatch();
+    error IncorrectChestFee(uint256 sent, uint256 required);
 
     constructor(
         address orderBook,
@@ -122,7 +145,8 @@ contract ProofGate {
         address warChest,
         uint64 sourceChainKey,
         uint64 stalenessWindowBlocks,
-        uint256 bountyPerOrder
+        uint256 bountyPerOrder,
+        uint256 chestFeePerOrder
     ) {
         VERIFIER = NativeQueryVerifierLib.getVerifier();
         CHAIN_INFO = IChainInfo(CHAIN_INFO_PRECOMPILE);
@@ -132,6 +156,7 @@ contract ProofGate {
         SOURCE_CHAIN_KEY = sourceChainKey;
         STALENESS_WINDOW_BLOCKS = stalenessWindowBlocks;
         BOUNTY_PER_ORDER = bountyPerOrder;
+        CHEST_FEE_PER_ORDER = chestFeePerOrder;
     }
 
     /// @notice Tops up the bounty pool. Permissionless — a game creator, a faction, or a
@@ -152,7 +177,9 @@ contract ProofGate {
         INativeQueryVerifier.MerkleProofEntry[] calldata siblings,
         bytes32 lowerEndpointDigest,
         bytes32[] calldata continuityRoots
-    ) external {
+    ) external payable {
+        if (msg.value != CHEST_FEE_PER_ORDER) revert IncorrectChestFee(msg.value, CHEST_FEE_PER_ORDER);
+
         INativeQueryVerifier.MerkleProof memory merkleProof =
             INativeQueryVerifier.MerkleProof({root: merkleRoot, siblings: siblings});
         INativeQueryVerifier.ContinuityProof memory continuityProof =
@@ -163,7 +190,7 @@ contract ProofGate {
         if (!verified) revert ProofVerificationFailed();
 
         uint64 txIndex = VERIFIER.calculateTxIndex(merkleProof);
-        _processOrder(blockHeight, txIndex, encodedTransaction);
+        _processOrder(blockHeight, txIndex, encodedTransaction, CHEST_FEE_PER_ORDER);
     }
 
     /// @notice Verify up to MAX_BATCH_SIZE proofs sharing one continuity proof in a single
@@ -177,12 +204,14 @@ contract ProofGate {
         INativeQueryVerifier.MerkleProofEntry[][] calldata siblingsPerOrder,
         bytes32 lowerEndpointDigest,
         bytes32[] calldata continuityRoots
-    ) external {
+    ) external payable {
         uint256 n = blockHeights.length;
         if (n == 0 || n > MAX_BATCH_SIZE) revert InvalidBatchSize(n);
         if (encodedTransactions.length != n || merkleRoots.length != n || siblingsPerOrder.length != n) {
             revert BatchLengthMismatch();
         }
+        uint256 requiredFee = CHEST_FEE_PER_ORDER * n;
+        if (msg.value != requiredFee) revert IncorrectChestFee(msg.value, requiredFee);
 
         INativeQueryVerifier.MerkleProof[] memory merkleProofs = new INativeQueryVerifier.MerkleProof[](n);
         for (uint256 i = 0; i < n; i++) {
@@ -198,14 +227,14 @@ contract ProofGate {
 
         for (uint256 i = 0; i < n; i++) {
             uint64 txIndex = VERIFIER.calculateTxIndex(merkleProofs[i]);
-            _processOrder(blockHeights[i], txIndex, encodedTransactions[i]);
+            _processOrder(blockHeights[i], txIndex, encodedTransactions[i], CHEST_FEE_PER_ORDER);
         }
     }
 
     /// @dev Shared by both entry points: checks 1-3 (via _findOrderLog), 4, 5, 7, then
     /// resolves on FactionMarch and pays the bounty. Assumes inclusion/continuity (the
     /// precompile call) was already verified by the caller.
-    function _processOrder(uint64 blockHeight, uint64 txIndex, bytes memory encodedTransaction) internal {
+    function _processOrder(uint64 blockHeight, uint64 txIndex, bytes memory encodedTransaction, uint256 chestFee) internal {
         EvmV1Decoder.ReceiptFields memory receipt = EvmV1Decoder.decodeReceiptFields(encodedTransaction);
         if (receipt.receiptStatus != 1) revert TransactionDidNotSucceed();
 
@@ -239,6 +268,10 @@ contract ProofGate {
 
         // Same-tx verify-and-execute: combat resolves in this transaction, not a later one.
         FACTION_MARCH.resolveOrder(gameId, commander, zoneId, units);
+
+        // Real CTC, moved by a real action, into the specific game this order belongs to --
+        // not split evenly across a batch, since a batch can legally span more than one game.
+        if (chestFee > 0) WAR_CHEST.depositToChest{value: chestFee}(gameId);
 
         bool bountyPaid = _payBounty(orderKey);
 
@@ -274,7 +307,7 @@ contract ProofGate {
         for (uint256 i = 0; i < n; i++) {
             if (receipt.receiptLogs[i].address_ == ORDER_BOOK) {
                 EvmV1Decoder.LogEntry memory log = receipt.receiptLogs[i];
-                if (log.topics.length == 0 || log.topics[0] != ORDER_PLACED_SIGNATURE) revert WrongTopic0();
+                if (log.topics.length == 0 || log.topics[0] != ORDER_REVEALED_SIGNATURE) revert WrongTopic0();
                 if (log.topics.length != 4) revert WrongTopicCount(log.topics.length);
                 return (log, i);
             }

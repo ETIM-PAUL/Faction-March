@@ -24,10 +24,19 @@ contract ProofGateScript is Script {
         uint64 sourceChainKey = uint64(vm.envOr("SOURCE_CHAIN_KEY", uint256(1)));
         uint64 stalenessWindowBlocks = uint64(vm.envOr("STALENESS_WINDOW_BLOCKS", uint256(1200)));
         uint256 bountyPerOrder = vm.envOr("BOUNTY_PER_ORDER_WEI", uint256(0.0001 ether));
+        // Kept smaller than bountyPerOrder so a courier who successfully lands a proof stays
+        // net-positive even after paying it — see ProofGate's own NatSpec on CHEST_FEE_PER_ORDER.
+        uint256 chestFeePerOrder = vm.envOr("CHEST_FEE_PER_ORDER_WEI", uint256(0.00005 ether));
 
         vm.startBroadcast();
         gate = new ProofGate(
-            orderBook, factionMarchAddress, warChestAddress, sourceChainKey, stalenessWindowBlocks, bountyPerOrder
+            orderBook,
+            factionMarchAddress,
+            warChestAddress,
+            sourceChainKey,
+            stalenessWindowBlocks,
+            bountyPerOrder,
+            chestFeePerOrder
         );
         FactionMarch(factionMarchAddress).setProofGate(address(gate));
         WarChest(warChestAddress).setProofGate(address(gate));
@@ -40,6 +49,7 @@ contract ProofGateScript is Script {
         console.log("sourceChainKey:", sourceChainKey);
         console.log("stalenessWindowBlocks:", stalenessWindowBlocks);
         console.log("bountyPerOrder (wei):", bountyPerOrder);
+        console.log("chestFeePerOrder (wei):", chestFeePerOrder);
         console.log("FactionMarch.setProofGate / WarChest.setProofGate: done");
     }
 }

@@ -12,8 +12,7 @@ An Attestcoin-secured territory war: orders are Sepolia transactions, and
 they only take effect once someone proves them to Creditcoin CC3. This
 README leads with that integration — what it proves, how it's hardened,
 and how it resolves in the same transaction it verifies — before getting to
-the game itself. See [`spikes/FINDINGS.md`](./spikes/FINDINGS.md) for the
-feasibility research and [`SECURITY.md`](./SECURITY.md) for the self-audit.
+the game itself.
 
 **Originality note.** The faction/zone/war-chest skeleton is a new codebase: proof-arrival resolution — `OrderBook.sol`, `ProofGate.sol`,
 `FactionMarch.sol`'s Attestcoin wiring, and `WarChest.sol` are all written
@@ -54,7 +53,11 @@ error so a rejection is legible on-chain:
 1. **Emitter allowlist** — `ForgedEmitter()`. The log's address must equal
    the deployed `OrderBook`, set immutably at deploy.
 2. **topic0 match** — `WrongTopic0()`, against
-   `keccak256("OrderPlaced(address,uint256,uint16,uint32,uint64)")`.
+   `keccak256("OrderRevealed(address,uint256,uint16,uint32,uint64)")` (the
+   event `OrderBook`'s commit/reveal split emits once units are actually
+   exposed — see *The game*, below; same shape the single-phase
+   `OrderPlaced` this replaced used to have, so nothing else in this check
+   list changed).
 3. **Topic count == 4** — `WrongTopicCount(count)`. Guards against a
    different event colliding on topic0 (the class of bug where ERC-20 and
    ERC-721 `Transfer` share a topic0 and differ only in topic count).
@@ -128,36 +131,123 @@ Three factions, 12 zones, each `{ owner, garrison }`. Faction assignment
 auto-balances on join. A zone always has an owner once first taken — it
 changes hands but never reverts to neutral. Combat is deterministic:
 attacker beats garrison, zone flips with survivors as the new garrison;
-attacker loses, garrison shrinks. No randomness — the fog comes from
-`ProofGate`'s ~9-minute march time (see *Networks*, below), not from dice.
+attacker loses, garrison shrinks. No randomness — the fog comes from two
+things, both real: `ProofGate`'s ~9-minute march time, and units genuinely
+hidden until the commander chooses to reveal them (below) — not from dice.
 Game lifecycle (`OPEN → ACTIVE → SETTLED`) is computed from block number,
 not stored, so no transaction is ever needed to "advance" it.
 
-Order fees accrue to a per-game war chest, split across factions by
-territory held. A faction can borrow against proven territory —
-`WarChest.sol` — to fund an offensive beyond its chest balance, with no
-separate collateral posted: territory read live from `FactionMarch` *is*
-the collateral. A draw must be repaid within `REPAYMENT_WINDOW_BLOCKS`
-(5000 blocks on the current deployment) of being taken, or the line
-defaults automatically — computed from the block number like everything
-else here, no transaction required to trigger it. Defaulting zeroes the
-credit limit immediately, and even after it's repaid and cleared, permanently
-cuts the faction's multiplier by 30% *per lifetime default* — it does not
-reset. Every resolved order also writes to an on-chain commander reputation
-record (orders issued, proven, bounties claimed, debts repaid). This is the
-credit thesis: an undercollateralised credit primitive that's played, not
-pitched, on a credit chain.
+**Orders are commit/reveal, not single-shot — units are genuinely hidden,
+not just hidden in the UI.** `OrderBook.commitOrder(gameId, zoneId,
+commitHash)` locks in a zone and pays the fee against
+`keccak256(abi.encode(units, salt))`, exposing nothing about army size to
+anyone watching Sepolia. `OrderBook.revealOrder(nonce, units, salt)` exposes
+the real count later, whenever the commander chooses — and it's the reveal
+transaction, not the commit, that a courier actually proves (`ProofGate` now
+checks for `OrderRevealed`, decoded exactly the way it used to decode the
+single-phase `OrderPlaced`). This is why the design isn't "hide units until
+the game ends": that would mean nothing is provable until `SETTLED`, forcing
+every order into one giant batch resolution at game end instead of the live,
+one-proof-at-a-time captures this game is actually built on (see *arrival
+order is authority*, above) — a different game, not a bigger version of this
+one. Hiding until reveal instead keeps every existing resolution mechanic
+intact while still denying an opponent the one thing that would let them
+out-reinforce an incoming attack before it lands: how large it actually is.
+The salt lives only in the revealer's own browser (`localStorage`, never
+sent anywhere until reveal) — lose it and that specific order can never be
+revealed, no recovery path, by design: a recoverable secret isn't one. Two
+honest limits, not hidden: a public mempool means a reveal transaction's
+calldata is visible to anyone watching *before* it's mined, not only after
+(this can't be fixed without a private relay, which is out of scope here);
+and once revealed, a resolved zone's garrison is exactly as public as it
+always was — there's no scheme that keeps *settled* combat outcomes secret,
+only the *unresolved* order leading up to one.
 
-The frontend (`web/`) is a zone map with ownership history, an order
-composer, a paginated courier board (single-order *and* in-browser batch
-submission — see *Batching*, above) that flags doomed proofs before anyone
-wastes real gas on them — an out-of-range zone or, just as fatal, a
-commander who never joined the game (`resolveOrder` reverts with
-`NotJoined` either way) — a war chest/credit panel showing each faction's
-live due-block countdown and default consequences, a connected wallet's own
-on-chain reputation pulled straight from `WarChest.reputations`, and — the
-single most important screen — an in-flight panel with a live ticking clock,
-so the UI never implies instant resolution.
+**A flat order fee doesn't buy a bigger army — that's deliberate.** The
+Sepolia order fee (0.0005 ETH) is priced per *action*, not per unit: it costs
+the same whether the order requests 1 unit or 1,000,000. What actually
+rations combat power is a pair of separate, purely on-chain mechanisms —
+`FactionMarch`'s per-commander unit pool, `UNITS_PER_BLOCK = 1` regenerating
+up to a total `MAX_UNIT_POOL = 500`, *and* a tighter `MAX_UNITS_PER_ORDER = 10`
+ceiling on any single order regardless of how large the pool has grown. The
+two caps are different knobs on purpose: the pool bounds total strength built
+up over time, the per-order cap forces a large attack into several separate
+orders — each one its own proof, its own arrival-order race, its own chance
+for a defender's reinforcement to land first and flip the outcome (see
+*arrival order is authority*, above). An order over 10 units isn't cheap
+firepower; it's a transaction guaranteed to revert with
+`ExceedsMaxUnitsPerOrder` the moment anyone tries to prove it, on any
+deployment, at any time — no wait raises that ceiling, unlike a merely
+depleted pool (which recovers, and reverts instead with the temporary
+`InsufficientUnits`). Sepolia's `OrderBook` has no way to see either cap and
+reject an order up front (Attestcoin proofs run one direction only:
+Creditcoin reads Sepolia, never the reverse), so it happily mines the order
+for the same flat fee regardless. Wealth buys more *orders*; only patience,
+territory, and timing buy a bigger single strike.
+
+A faction can borrow against proven territory — `WarChest.sol` — to fund an
+offensive, with no separate collateral posted: territory read live from
+`FactionMarch` *is* the collateral, so `creditLimit` is pure arithmetic
+(`zonesHeld × 0.001 CTC`, adjusted by reputation), not a balance. **It is not
+money sitting anywhere** — the chest's actual spendable CTC comes only from
+someone explicitly calling `depositToChest()` (or `repay()`), and starts at
+zero on every game with no carryover from any other game: `chestBalance`,
+`factionCredit`, and `creditLimit` are all keyed by `gameId`, so game 2 knows
+nothing about game 1's territory, deposits, or borrowing history, even
+seconds after game 1 settles. A faction can have a nonzero `creditLimit` and
+still have nothing to actually draw against — `borrow()` checks the real
+`chestBalance` too, and reverts with `InsufficientChestBalance` if the limit
+outruns what's really in the pool. A draw must be repaid within
+`REPAYMENT_WINDOW_BLOCKS` (5000 blocks on the current deployment) of being
+taken, or the line defaults automatically — computed from the block number
+like everything else here, no transaction required to trigger it. Defaulting
+zeroes the credit limit immediately, and even after it's repaid and cleared,
+permanently cuts the faction's multiplier by 30% *per lifetime default* — it
+does not reset. Every resolved order also writes to an on-chain commander
+reputation record (orders issued, proven, bounties claimed, debts repaid).
+This is the credit thesis: an undercollateralised credit primitive that's
+played, not pitched, on a credit chain — real funds still have to come from
+somewhere, since Attestcoin's one-directional proofs mean the Sepolia order
+fee itself can't be bridged into CTC and dropped into the chest automatically.
+
+**That doesn't mean the chest has to stay manually-funded forever, though.**
+Every successful `submitOrderProof`/`submitOrderProofBatch` call now requires
+the courier to attach a small native CTC fee (`CHEST_FEE_PER_ORDER`,
+0.00005 CTC on the current deployment) alongside it, deposited straight into
+that specific order's game's chest via `WarChest.depositToChest` in the same
+transaction. Real CTC, moved by a real action, growing the chest in lockstep
+with actual proven gameplay instead of sitting inert until someone clicks
+"fund chest" unprompted. It's charged to the courier rather than the
+commander — commanders only ever pay on Sepolia, in ETH, and there's no way
+to charge a CC3-side fee to an address that only acted on Sepolia — so it
+nets against `BOUNTY_PER_ORDER` (0.0001 CTC) rather than stacking a new cost
+on top of the Sepolia fee; deliberately kept smaller than the bounty so a
+courier who successfully lands proofs stays net-positive overall. Enforced
+per-order even inside a batch (`msg.value` must equal
+`CHEST_FEE_PER_ORDER × count`), and routed to each order's own `gameId`
+individually rather than summed into one deposit — correct regardless, and
+specifically matters if `FactionMarch`'s current one-active-game-at-a-time
+rule is ever relaxed, since nothing here assumes every order in a batch
+shares a game.
+
+The frontend (`web/`) is a zone map with a live join/active countdown and
+ownership history, a commit/reveal order composer (with a local "commits
+awaiting reveal" queue, salt kept only in the browser, exactly one "Reveal"
+click away), a paginated courier board (single-order
+*and* in-browser batch submission — see *Batching*, above), and an in-flight
+panel — both flag doomed proofs before anyone wastes real gas on them,
+covering all three ways `resolveOrder` is guaranteed to revert regardless of
+when it's proven: an out-of-range zone (`InvalidZone`), a commander who never
+joined before the game left OPEN (`NotJoined` — joining itself closes
+permanently once a game goes ACTIVE), or a single order over the 10-unit
+per-order cap (`ExceedsMaxUnitsPerOrder`, unraisable by waiting — the order
+composer also warns, non-blockingly, when your live pool is merely
+*temporarily* short of a request that's still under that cap). There's also a war
+chest/credit panel showing each faction's live due-block countdown and
+default consequences, a connected wallet's own on-chain reputation pulled
+straight from `WarChest.reputations`, and — the single most important
+screen — the in-flight panel's live ticking clock, so the UI never implies
+instant resolution.
 
 ---
 
@@ -165,12 +255,12 @@ so the UI never implies instant resolution.
 
 | Contract | Network | Address |
 |---|---|---|
-| `OrderBook` | Sepolia | [`0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F`](https://sepolia.etherscan.io/address/0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F#code) — verified, orderFee 0.0005 ETH, treasury `0x9d4eF81F5225107049ba08F69F598D97B31ea644` |
-| `FactionMarch` | Creditcoin CC3 | `0xE3c75BD8B7029175f909141ffD2639D8478C9ea4` — game board, `resolveOrder` restricted to `ProofGate` below; only one game may be OPEN/ACTIVE at a time (`createGame` reverts with `PreviousGameNotSettled` otherwise), open duration capped at `MAX_OPEN_DURATION_BLOCKS` (3600 blocks, ~15h at CC3's measured 15s/block), active duration capped at `MAX_ACTIVE_DURATION_BLOCKS` (28,800 blocks, ~5 days) |
-| `WarChest` | Creditcoin CC3 | `0xc15b39Ecd7068B2a2409f5833389Dd4c7E34B080` — credit line + reputation, reads territory from `FactionMarch` above, repayment window 5000 blocks |
-| `ProofGate` | Creditcoin CC3 | `0x5F979DaafCc5D3324Ea446e9DcEa829aCe4aE0e1` — hardened, wired to `FactionMarch` and `WarChest` above, allowlists `OrderBook` above, staleness window 1200 blocks, bounty 0.0001 CTC/order, bounty pool funded with 0.01 CTC |
+| `OrderBook` | Sepolia | `0xa9842871a176feeA29590de1A71DE829940FfC36` — commit/reveal (`commitOrder`/`revealOrder`), orderFee 0.0005 ETH paid at commit, treasury `0x9d4eF81F5225107049ba08F69F598D97B31ea644` |
+| `FactionMarch` | Creditcoin CC3 | `0x3FA9CEeD76511372De1396e66D1561e8d5e5af3D` — game board, `resolveOrder` restricted to `ProofGate` below; only one game may be OPEN/ACTIVE at a time (`createGame` reverts with `PreviousGameNotSettled` otherwise), open duration capped at `MAX_OPEN_DURATION_BLOCKS` (3600 blocks, ~15h at CC3's measured 15s/block), active duration capped at `MAX_ACTIVE_DURATION_BLOCKS` (28,800 blocks, ~5 days), single order capped at `MAX_UNITS_PER_ORDER` (10, independent of the 500-unit total pool) |
+| `WarChest` | Creditcoin CC3 | `0x27A3fb6e3A576F15e8463b174415F1Ec51BB9f19` — credit line + reputation, reads territory from `FactionMarch` above, repayment window 5000 blocks |
+| `ProofGate` | Creditcoin CC3 | `0x3684c468B9Bd5fF998706294C1cA07f49609083a` — hardened, wired to `FactionMarch` and `WarChest` above, allowlists `OrderBook` above (checks for `OrderRevealed`, not the old `OrderPlaced`), staleness window 1200 blocks, bounty 0.0001 CTC/order (pool funded with 0.01 CTC), chest fee 0.00005 CTC/order deposited into `WarChest` on every successful proof |
 
-Superseded addresses, kept only as a record of earlier iterations (see `spikes/FINDINGS.md`): `ProofGate` unguarded, no emitter check `0x296Ecf33a2c64F7A858133E60aC5d732Cd1b654c`; `ProofGate` hardened, before `FactionMarch` wiring `0x9fe147c23600CFcB7dd0DAEc4670d96868142744`; `FactionMarch` no access control `0x871F283Cf322F0206FE6424EE01529E186270eb5`; `ProofGate`/`FactionMarch` wired, no bounty/batching `0x0739BA644E4a25e529B04b870b54958c4C25131d` / `0x3181cFd3D6927656797208C20848c2B623bbf223`; `ProofGate`/`FactionMarch` bounty/batching, no `WarChest` `0x1BDA513AC071A6736Bb5569499CE9a7D96c3E0bc` / `0x92b474811aC11EbfFdcc21fc240993b46909ae69`; `ProofGate`/`FactionMarch`/`WarChest` wired, no game-exclusivity rule (any number of games could be OPEN/ACTIVE at once) `0xcEd503d0Eeb04C13F8974CaA85d06A22f0441C88` / `0xEf7Cc55BD1bF5c836D4CcD0c3d108415a6Bc18Ba` / `0x54C3901F43d1ab2694357D304e6dAc1671Cf10a2`; `ProofGate`/`FactionMarch`/`WarChest` wired with exclusivity + duration caps, but default game durations assumed an unverified ~1 block/sec (actually 15s/block — see `spikes/FINDINGS.md`) `0x58ef7793d058d7F2e11DCe57747bEf6D1d487778` / `0xB8Fde830fF968E56528539505243da22ce59b628` / `0xF1eD07B6A8406E2b0B7D8FE072C64740aCdf24C4`.
+Superseded addresses, kept only as a record of earlier iterations (see `spikes/FINDINGS.md`): `ProofGate` unguarded, no emitter check `0x296Ecf33a2c64F7A858133E60aC5d732Cd1b654c`; `ProofGate` hardened, before `FactionMarch` wiring `0x9fe147c23600CFcB7dd0DAEc4670d96868142744`; `FactionMarch` no access control `0x871F283Cf322F0206FE6424EE01529E186270eb5`; `ProofGate`/`FactionMarch` wired, no bounty/batching `0x0739BA644E4a25e529B04b870b54958c4C25131d` / `0x3181cFd3D6927656797208C20848c2B623bbf223`; `ProofGate`/`FactionMarch` bounty/batching, no `WarChest` `0x1BDA513AC071A6736Bb5569499CE9a7D96c3E0bc` / `0x92b474811aC11EbfFdcc21fc240993b46909ae69`; `ProofGate`/`FactionMarch`/`WarChest` wired, no game-exclusivity rule (any number of games could be OPEN/ACTIVE at once) `0xcEd503d0Eeb04C13F8974CaA85d06A22f0441C88` / `0xEf7Cc55BD1bF5c836D4CcD0c3d108415a6Bc18Ba` / `0x54C3901F43d1ab2694357D304e6dAc1671Cf10a2`; `ProofGate`/`FactionMarch`/`WarChest` wired with exclusivity + duration caps, but default game durations assumed an unverified ~1 block/sec (actually 15s/block — see `spikes/FINDINGS.md`) `0x58ef7793d058d7F2e11DCe57747bEf6D1d487778` / `0xB8Fde830fF968E56528539505243da22ce59b628` / `0xF1eD07B6A8406E2b0B7D8FE072C64740aCdf24C4`; `ProofGate`/`FactionMarch`/`WarChest` wired with correct durations, but no per-order unit cap and no chest-fee mechanism yet `0x5F979DaafCc5D3324Ea446e9DcEa829aCe4aE0e1` / `0xE3c75BD8B7029175f909141ffD2639D8478C9ea4` / `0xc15b39Ecd7068B2a2409f5833389Dd4c7E34B080`; `ProofGate`/`FactionMarch`/`WarChest` wired with per-order cap + chest fee, but `OrderBook` was still single-phase `placeOrder` (no unit secrecy) `0xdB29051641c7257BF8ca45a68B16505C254dC6d1` / `0x1561d62A22F74BA2098202Dd915669e2631a5e88` / `0x44db1f17611214Fc57a5D6aA116d3852FB12aA37`, `OrderBook` `0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F`.
 
 ## Networks
 

@@ -20,6 +20,10 @@ const factionMarchArtifact = require('../../contracts/creditcoin/out/FactionMarc
 
 const FACTION_NAMES = ['None', 'Alpha', 'Beta', 'Gamma'];
 
+function randomSalt(): string {
+  return ethers.hexlify(ethers.randomBytes(32));
+}
+
 function need(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env var: ${name}`);
@@ -61,15 +65,36 @@ async function main() {
 
   const orderFee: bigint = await orderBook.orderFee();
 
-  console.log(`Placing ${count} orders on OrderBook back to back...`);
+  console.log(`Committing ${count} orders on OrderBook back to back (units hidden)...`);
+  const commits: { nonce: bigint; salt: string }[] = [];
+  for (let i = 0; i < count; i++) {
+    const salt = randomSalt();
+    const commitHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['uint32', 'bytes32'], [1, salt]));
+    const tx = await orderBook.commitOrder(gameId, i, commitHash, { value: orderFee });
+    const receipt = await tx.wait(1);
+    const committedEvent = receipt.logs
+      .map((log: any) => {
+        try {
+          return orderBook.interface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((parsed: any) => parsed?.name === 'OrderCommitted');
+    if (!committedEvent) throw new Error(`OrderCommitted not found for order ${i}`);
+    commits.push({ nonce: committedEvent.args.nonce as bigint, salt });
+    console.log(`  committed ${i}: zoneId=${i} tx=${receipt.hash} nonce=${committedEvent.args.nonce}`);
+  }
+
+  console.log(`Revealing all ${count} orders back to back...`);
   const txHashes: string[] = [];
   let lastBlock = 0;
   for (let i = 0; i < count; i++) {
-    const tx = await orderBook.placeOrder(gameId, i, 1, { value: orderFee });
+    const tx = await orderBook.revealOrder(commits[i].nonce, 1, commits[i].salt);
     const receipt = await tx.wait(1);
     txHashes.push(receipt.hash);
     lastBlock = Math.max(lastBlock, receipt.blockNumber);
-    console.log(`  order ${i}: zoneId=${i} tx=${receipt.hash} block=${receipt.blockNumber}`);
+    console.log(`  revealed ${i}: tx=${receipt.hash} block=${receipt.blockNumber}`);
   }
 
   const proofBuilder = new proofProvider.service.ProofBuilder(sourceChainKey, proofBuilderUrl);
@@ -96,14 +121,20 @@ async function main() {
     }
   }
 
-  console.log(`Submitting batch of ${heights.length} proofs to ProofGate.submitOrderProofBatch in ONE transaction...`);
+  const chestFeePerOrder: bigint = await proofGate.CHEST_FEE_PER_ORDER();
+  const totalChestFee = chestFeePerOrder * BigInt(heights.length);
+  console.log(
+    `Submitting batch of ${heights.length} proofs to ProofGate.submitOrderProofBatch in ONE transaction ` +
+      `(chest fee: ${ethers.formatEther(totalChestFee)} CTC total)...`
+  );
   const batchTx = await proofGate.submitOrderProofBatch(
     heights,
     encodedTxs,
     merkleRoots,
     siblingsPerOrder,
     batch.continuityProof.lowerEndpointDigest,
-    batch.continuityProof.roots
+    batch.continuityProof.roots,
+    { value: totalChestFee }
   );
   console.log(`Submitted: ${batchTx.hash}`);
   const batchReceipt = await batchTx.wait();

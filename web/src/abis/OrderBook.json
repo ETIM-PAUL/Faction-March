@@ -17,6 +17,74 @@
   },
   {
     "type": "function",
+    "name": "commitOrder",
+    "inputs": [
+      {
+        "name": "gameId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "zoneId",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "commitHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "nonce",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "commitments",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "commitHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "gameId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "zoneId",
+        "type": "uint16",
+        "internalType": "uint16"
+      },
+      {
+        "name": "revealed",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "nonces",
     "inputs": [
       {
@@ -49,26 +117,26 @@
   },
   {
     "type": "function",
-    "name": "placeOrder",
+    "name": "revealOrder",
     "inputs": [
       {
-        "name": "gameId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "zoneId",
-        "type": "uint16",
-        "internalType": "uint16"
+        "name": "nonce",
+        "type": "uint64",
+        "internalType": "uint64"
       },
       {
         "name": "units",
         "type": "uint32",
         "internalType": "uint32"
+      },
+      {
+        "name": "salt",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "outputs": [],
-    "stateMutability": "payable"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -92,7 +160,44 @@
   },
   {
     "type": "event",
-    "name": "OrderPlaced",
+    "name": "OrderCommitted",
+    "inputs": [
+      {
+        "name": "commander",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "gameId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "zoneId",
+        "type": "uint16",
+        "indexed": true,
+        "internalType": "uint16"
+      },
+      {
+        "name": "commitHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "nonce",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "OrderRevealed",
     "inputs": [
       {
         "name": "commander",
@@ -142,6 +247,38 @@
   },
   {
     "type": "error",
+    "name": "AlreadyRevealed",
+    "inputs": [
+      {
+        "name": "commander",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "nonce",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "CommitmentMismatch",
+    "inputs": [
+      {
+        "name": "expected",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "provided",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "IncorrectFee",
     "inputs": [
       {
@@ -153,6 +290,22 @@
         "name": "required",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnknownCommitment",
+    "inputs": [
+      {
+        "name": "commander",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "nonce",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ]
   },

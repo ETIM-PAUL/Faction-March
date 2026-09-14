@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import type { useWallet } from '../hooks/useWallet';
 import type { TrackedOrder } from '../hooks/useOrders';
 import type { GameData } from '../hooks/useGameData';
-import { useDoomedOrders } from '../hooks/useDoomedOrders';
+import { useDoomedOrders, MAX_UNITS_PER_ORDER } from '../hooks/useDoomedOrders';
 import { getAttestedHeight, getBatchProof, getProofForTx } from '../lib/proofBuilder';
 import { proofGateContract } from '../lib/contracts';
+import { creditcoinReadProvider } from '../lib/providers';
 import { CREDITCOIN_CHAIN_ID } from '../config';
-import { shortAddress } from '../lib/format';
+import { shortAddress, formatCtc } from '../lib/format';
 import { describeError } from '../lib/errors';
 
 const BATCH_RANGE_BLOCKS = 1000; // matches the precompile's MAX_BATCH_RANGE
@@ -31,6 +32,15 @@ export function CourierBoard({
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchStatus, setBatchStatus] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [chestFeePerOrder, setChestFeePerOrder] = useState<bigint | null>(null);
+
+  // CHEST_FEE_PER_ORDER is immutable -- fetch once, not on every poll tick.
+  useEffect(() => {
+    proofGateContract(creditcoinReadProvider)
+      .CHEST_FEE_PER_ORDER()
+      .then((v: bigint) => setChestFeePerOrder(v))
+      .catch(() => setChestFeePerOrder(null));
+  }, []);
 
   const pending = orders.filter((o) => !o.resolved);
   const pageCount = Math.max(1, Math.ceil(pending.length / PAGE_SIZE));
@@ -73,7 +83,8 @@ export function CourierBoard({
         proof.merkleProof.root,
         proof.merkleProof.siblings,
         proof.continuityProof.lowerEndpointDigest,
-        proof.continuityProof.roots
+        proof.continuityProof.roots,
+        { value: chestFeePerOrder ?? 0n }
       );
       setStatusByKey((s) => ({ ...s, [order.key]: `Submitted ${tx.hash}, waiting…` }));
       await tx.wait();
@@ -108,13 +119,15 @@ export function CourierBoard({
       setBatchStatus('Submitting batch to ProofGate…');
       const signer = await wallet.getSigner();
       const gate = proofGateContract(signer);
+      const totalFee = (chestFeePerOrder ?? 0n) * BigInt(batch.length);
       const tx = await gate.submitOrderProofBatch(
         proof.heights,
         proof.encodedTxs,
         proof.merkleRoots,
         proof.siblingsPerOrder,
         proof.continuityProof.lowerEndpointDigest,
-        proof.continuityProof.roots
+        proof.continuityProof.roots,
+        { value: totalFee }
       );
       setBatchStatus(`Submitted ${tx.hash}, waiting…`);
       await tx.wait();
@@ -133,6 +146,13 @@ export function CourierBoard({
         <h2>Courier board</h2>
         <span className="panel-eyebrow">no privileged role — anyone can carry a proof</span>
       </div>
+      {chestFeePerOrder !== null && chestFeePerOrder > 0n && (
+        <p className="muted">
+          Each proof costs {formatCtc(chestFeePerOrder)} CTC, deposited straight into that order's game's war chest —
+          real funds, moved by a real action, growing the chest in lockstep with actual play. Nets against the
+          bounty, so a successful proof still leaves you ahead overall.
+        </p>
+      )}
       {pending.length === 0 ? (
         <p className="muted">Nothing waiting on a courier.</p>
       ) : (
@@ -175,6 +195,10 @@ export function CourierBoard({
                       {doomReason === 'invalid-zone' ? (
                         <span className="pill error">
                           zone {o.zoneId} doesn't exist (0–{game.zoneCount - 1}) — will always revert
+                        </span>
+                      ) : doomReason === 'exceeds-unit-cap' ? (
+                        <span className="pill error">
+                          {o.units} units exceeds the {MAX_UNITS_PER_ORDER}-per-order cap — will always revert
                         </span>
                       ) : doomReason === 'not-joined' ? (
                         <span className="pill error">commander never joined — will always revert</span>

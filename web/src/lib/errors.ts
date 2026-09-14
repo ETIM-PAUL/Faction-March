@@ -56,11 +56,21 @@ function friendlyMessage(name: string, args: ReadonlyArray<unknown>): string | n
     case 'ZeroUnits':
       return `Units must be greater than zero.`;
     case 'InsufficientUnits':
+      // A request this size always passes the MAX_UNITS_PER_ORDER check first (see below), so
+      // reaching this error means the amount itself was valid -- just not replenished yet.
       return `You need ${a[0]} units but only have ${a[1]} available right now — units replenish over time, try again shortly.`;
+    case 'ExceedsMaxUnitsPerOrder':
+      return `A single order can request at most ${a[1]} units (asked for ${a[0]}) — no wait ever raises that ceiling, so this could never resolve. Split it into multiple orders instead.`;
     case 'NotJoined':
       return `You haven't joined this game yet.`;
     case 'IncorrectFee':
       return `Incorrect fee: sent ${formatEther(a[0])} ETH, needs to be exactly ${formatEther(a[1])} ETH.`;
+    case 'UnknownCommitment':
+      return `No commitment found for that order — it may already be revealed, or from a different wallet.`;
+    case 'AlreadyRevealed':
+      return `This order was already revealed.`;
+    case 'CommitmentMismatch':
+      return `Those units/salt don't match what you committed to — this is a client bug (wrong local data), not something you did wrong.`;
     case 'ForgedEmitter':
       return `This proof's log wasn't emitted by the real OrderBook contract.`;
     case 'WrongTopic0':
@@ -69,7 +79,7 @@ function friendlyMessage(name: string, args: ReadonlyArray<unknown>): string | n
     case 'OrderAlreadyProcessed':
       return `This order has already been proven by someone else.`;
     case 'OrderStale':
-      return `This order is too old to prove now (its block is too far behind the latest attested height) — it expired safely, no game state was affected.`;
+      return `Too stale to prove now — expired safely, no state changed.`;
     case 'TransactionDidNotSucceed':
       return `The original Sepolia transaction reverted, so there's nothing valid to prove.`;
     case 'ProofVerificationFailed':
@@ -80,6 +90,8 @@ function friendlyMessage(name: string, args: ReadonlyArray<unknown>): string | n
       return `Got ${a[0]} orders, but a batch must contain between 1 and 10 (ProofGate.MAX_BATCH_SIZE).`;
     case 'BatchLengthMismatch':
       return `Batch arrays are out of sync with each other — this is a client bug, not something you did wrong.`;
+    case 'IncorrectChestFee':
+      return `Sent ${formatEther(a[0])} CTC, but this needs exactly ${formatEther(a[1])} CTC — the courier fee that funds this game's chest.`;
     case 'NotFactionMember':
       return `Only members of that faction can act on its credit line.`;
     case 'CreditLineInDefault':

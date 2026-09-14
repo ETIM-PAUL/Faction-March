@@ -46,22 +46,29 @@ async function queryLogsChunked(
   return results;
 }
 
-/** Tracks OrderPlaced (Sepolia) vs OrderArrived (Creditcoin) for one game, matched by
- * (commander, zoneId, nonce). This is the data behind the in-flight panel and courier
- * board — the single most important screen, per the build plan: it's what makes "march
- * time" visible instead of implying instant resolution. */
+/** Tracks OrderRevealed (Sepolia) vs OrderArrived (Creditcoin) for one game, matched by
+ * (commander, zoneId, nonce). An order only enters this tracker once its commander reveals
+ * it -- OrderBook's commit/reveal split (Phase 14) keeps units hidden before that, and a
+ * committed-but-unrevealed order isn't provable yet anyway, so there's nothing for this
+ * hook (or the courier board, or the in-flight panel) to do with it until then. This is the
+ * data behind the in-flight panel and courier board — the single most important screen, per
+ * the build plan: it's what makes "march time" visible instead of implying instant
+ * resolution. */
 export function useOrders(gameId: bigint | null, intervalMs = 10000) {
   const [orders, setOrders] = useState<Map<string, TrackedOrder>>(new Map());
   const lastSepoliaBlock = useRef<number | null>(null);
   const lastCreditcoinBlock = useRef<number | null>(null);
 
   useEffect(() => {
-    if (gameId === null) {
-      setOrders(new Map());
-      lastSepoliaBlock.current = null;
-      lastCreditcoinBlock.current = null;
-      return;
-    }
+    // Reset on every gameId change, not just null -- switching from one real game straight
+    // to another (e.g. starting a fresh game right after the last one settles) previously
+    // left the old game's orders sitting in state and its lookback cursors pointed at
+    // blocks that don't apply to the new game's topic filter, so stale in-flight/courier
+    // rows lingered until a manual page refresh.
+    setOrders(new Map());
+    lastSepoliaBlock.current = null;
+    lastCreditcoinBlock.current = null;
+    if (gameId === null) return;
 
     let cancelled = false;
     const gameIdTopic = '0x' + gameId.toString(16).padStart(64, '0');
@@ -70,10 +77,10 @@ export function useOrders(gameId: bigint | null, intervalMs = 10000) {
       try {
         const currentSepoliaBlock = await sepoliaReadProvider.getBlockNumber();
         const fromSepolia = lastSepoliaBlock.current ?? Math.max(0, currentSepoliaBlock - LOOKBACK_BLOCKS);
-        const placedLogs = await queryLogsChunked(
+        const revealedLogs = await queryLogsChunked(
           sepoliaReadProvider,
           ADDRESSES.orderBook,
-          [orderBookIface.getEvent('OrderPlaced')!.topicHash, null, gameIdTopic],
+          [orderBookIface.getEvent('OrderRevealed')!.topicHash, null, gameIdTopic],
           fromSepolia,
           currentSepoliaBlock
         );
@@ -95,7 +102,7 @@ export function useOrders(gameId: bigint | null, intervalMs = 10000) {
         setOrders((prev) => {
           const next = new Map(prev);
 
-          for (const log of placedLogs) {
+          for (const log of revealedLogs) {
             const parsed = orderBookIface.parseLog(log);
             if (!parsed) continue;
             const commander = parsed.args.commander as string;
@@ -136,7 +143,7 @@ export function useOrders(gameId: bigint | null, intervalMs = 10000) {
 
         // Backfill Sepolia block timestamps for any newly-seen orders (best-effort, one
         // lookup per distinct block rather than per order).
-        const blocksNeeded = new Set(placedLogs.map((l) => l.blockNumber));
+        const blocksNeeded = new Set(revealedLogs.map((l) => l.blockNumber));
         const timestamps = new Map<number, number>();
         await Promise.all(
           Array.from(blocksNeeded).map(async (blockNumber) => {

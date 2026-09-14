@@ -248,24 +248,47 @@ contract FactionMarchTest is Test {
         uint256 gameId = _createGame();
         _joinBothAndActivate(gameId, 20);
 
-        march.resolveOrder(gameId, alice, 0, 10); // Alpha garrison 10
-        march.resolveOrder(gameId, bob, 0, 15); // Beta attacks with more than garrison
+        march.resolveOrder(gameId, alice, 0, 5); // Alpha garrison 5
+        march.resolveOrder(gameId, bob, 0, 10); // Beta attacks with more than garrison (still <= MAX_UNITS_PER_ORDER)
 
         (FactionMarch.Faction owner, uint256 garrison) = march.zones(gameId, 0);
         assertEq(uint8(owner), uint8(FactionMarch.Faction.Beta));
-        assertEq(garrison, 5); // 15 - 10 survivors
+        assertEq(garrison, 5); // 10 - 5 survivors
     }
 
     function test_revert_resolveOrder_insufficientUnits() public {
-        uint256 gameId = _createGame();
+        // A short open window so the pool is still small at ACTIVE -- keeps this test's
+        // request comfortably under MAX_UNITS_PER_ORDER while still exceeding what's
+        // actually available, exercising InsufficientUnits rather than the per-order cap.
+        uint256 gameId = march.createGame(12, 3, 100);
         vm.prank(alice);
         march.join(gameId);
         (,, uint64 activeStartBlock,) = march.games(gameId);
         vm.roll(activeStartBlock);
 
         uint256 available = march.currentUnits(gameId, alice);
-        vm.expectRevert(abi.encodeWithSelector(FactionMarch.InsufficientUnits.selector, available + 1, available));
-        march.resolveOrder(gameId, alice, 0, uint32(available + 1));
+        uint32 requested = uint32(available) + 1;
+        vm.expectRevert(abi.encodeWithSelector(FactionMarch.InsufficientUnits.selector, requested, available));
+        march.resolveOrder(gameId, alice, 0, requested);
+    }
+
+    function test_revert_resolveOrder_exceedsMaxUnitsPerOrder() public {
+        uint256 gameId = _createGame();
+        _joinAndActivate(gameId, alice, 50); // plenty in the pool -- this is about the per-order cap, not availability
+
+        uint32 tooMany = march.MAX_UNITS_PER_ORDER() + 1;
+        vm.expectRevert(abi.encodeWithSelector(FactionMarch.ExceedsMaxUnitsPerOrder.selector, tooMany, march.MAX_UNITS_PER_ORDER()));
+        march.resolveOrder(gameId, alice, 0, tooMany);
+    }
+
+    function test_resolveOrder_allowsExactlyMaxUnitsPerOrder() public {
+        uint256 gameId = _createGame();
+        _joinAndActivate(gameId, alice, 50);
+
+        march.resolveOrder(gameId, alice, 0, march.MAX_UNITS_PER_ORDER());
+
+        (, uint256 garrison) = march.zones(gameId, 0);
+        assertEq(garrison, march.MAX_UNITS_PER_ORDER());
     }
 
     function test_revert_resolveOrder_notJoined() public {
@@ -366,29 +389,29 @@ contract FactionMarchTest is Test {
         march.join(gameId); // Gamma
 
         (,, uint64 activeStartBlock,) = march.games(gameId);
-        vm.roll(activeStartBlock + 50); // everyone has 50 units available
+        vm.roll(activeStartBlock + 50); // everyone has 50 units available -- plenty across several orders, just capped per single order
 
         // Alpha and Beta both grab a zone each; Gamma reinforces nothing yet.
-        march.resolveOrder(gameId, alice, 0, 20);
-        march.resolveOrder(gameId, bob, 1, 15);
+        march.resolveOrder(gameId, alice, 0, 8);
+        march.resolveOrder(gameId, bob, 1, 6);
 
         // Gamma attacks Alpha's zone 0 and wins.
-        march.resolveOrder(gameId, carol, 0, 25);
+        march.resolveOrder(gameId, carol, 0, 10);
         (FactionMarch.Faction owner0, uint256 garrison0) = march.zones(gameId, 0);
         assertEq(uint8(owner0), uint8(FactionMarch.Faction.Gamma));
-        assertEq(garrison0, 5);
+        assertEq(garrison0, 2);
 
         // Alpha reinforces zone... wait, Alpha no longer owns zone 0 — attack it back instead.
-        march.resolveOrder(gameId, alice, 0, 10); // Alpha attacks Gamma's garrison of 5
+        march.resolveOrder(gameId, alice, 0, 3); // Alpha attacks Gamma's garrison of 2
         (FactionMarch.Faction owner0After, uint256 garrison0After) = march.zones(gameId, 0);
         assertEq(uint8(owner0After), uint8(FactionMarch.Faction.Alpha));
-        assertEq(garrison0After, 5);
+        assertEq(garrison0After, 1);
 
         // Beta reinforces its own zone 1.
-        march.resolveOrder(gameId, bob, 1, 5);
+        march.resolveOrder(gameId, bob, 1, 2);
         (FactionMarch.Faction owner1, uint256 garrison1) = march.zones(gameId, 1);
         assertEq(uint8(owner1), uint8(FactionMarch.Faction.Beta));
-        assertEq(garrison1, 20);
+        assertEq(garrison1, 8);
 
         // Zone 2 stays unclaimed — never touched.
         (FactionMarch.Faction owner2,) = march.zones(gameId, 2);

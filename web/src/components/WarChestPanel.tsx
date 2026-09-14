@@ -197,7 +197,7 @@ export function WarChestPanel({
         </button>
       </div>
 
-      {myFaction !== null && myFaction > 0 && (
+      {myFaction !== null && myFaction > 0 ? (
         <>
           <div className="field-row">
             <label>
@@ -218,6 +218,14 @@ export function WarChestPanel({
             </button>
           </div>
         </>
+      ) : (
+        wallet.address && (
+          <p className="muted">
+            Borrow/repay only show once you've joined this specific game — `WarChest.borrow` needs a faction
+            (`NotFactionMember` otherwise), and membership is per-game, not per-wallet. You haven't joined game{' '}
+            {gameId?.toString()}.
+          </p>
+        )
       )}
       {status && <p className="muted">{status}</p>}
 

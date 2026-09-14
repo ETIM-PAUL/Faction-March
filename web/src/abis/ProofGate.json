@@ -31,6 +31,11 @@
         "name": "bountyPerOrder",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "chestFeePerOrder",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "nonpayable"
@@ -57,6 +62,19 @@
         "name": "",
         "type": "address",
         "internalType": "contract IChainInfo"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "CHEST_FEE_PER_ORDER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -102,7 +120,7 @@
   },
   {
     "type": "function",
-    "name": "ORDER_PLACED_SIGNATURE",
+    "name": "ORDER_REVEALED_SIGNATURE",
     "inputs": [],
     "outputs": [
       {
@@ -252,7 +270,7 @@
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "payable"
   },
   {
     "type": "function",
@@ -302,7 +320,7 @@
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "payable"
   },
   {
     "type": "event",
@@ -431,6 +449,22 @@
     "inputs": [
       {
         "name": "gameId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "IncorrectChestFee",
+    "inputs": [
+      {
+        "name": "sent",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
         "type": "uint256",
         "internalType": "uint256"
       }

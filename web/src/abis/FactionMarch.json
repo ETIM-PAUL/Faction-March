@@ -45,6 +45,19 @@
   },
   {
     "type": "function",
+    "name": "MAX_UNITS_PER_ORDER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_UNIT_POOL",
     "inputs": [],
     "outputs": [
@@ -556,6 +569,22 @@
         "name": "commander",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ExceedsMaxUnitsPerOrder",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "max",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ]
   },

@@ -47,6 +47,13 @@ contract FactionMarch {
     uint16 public constant MAX_ZONE_COUNT = 100;
     uint256 public constant UNITS_PER_BLOCK = 1;
     uint256 public constant MAX_UNIT_POOL = 500;
+    /// @notice A single order can spend at most this many units, even though the pool itself
+    /// can hold up to MAX_UNIT_POOL. Forces a large attack into several separate orders
+    /// instead of one — each one a separate proof, a separate arrival-order race, a separate
+    /// chance for a defender's reinforcement to land first. The pool cap and the per-order
+    /// cap are deliberately different knobs: one bounds total strength over time, the other
+    /// bounds a single strike.
+    uint32 public constant MAX_UNITS_PER_ORDER = 10;
     /// @notice Only one game may be OPEN or ACTIVE at a time (see createGame). That makes a
     /// game's duration a shared resource, not just its creator's choice — without a cap,
     /// anyone could permissionlessly lock out every future game for years by picking a huge
@@ -83,6 +90,7 @@ contract FactionMarch {
     error NotJoined(address commander);
     error InvalidZone(uint16 zoneId, uint16 zoneCount);
     error ZeroUnits();
+    error ExceedsMaxUnitsPerOrder(uint32 requested, uint32 max);
     error InsufficientUnits(uint256 requested, uint256 available);
     error OnlyDeployer();
     error ProofGateAlreadySet();
@@ -179,6 +187,7 @@ contract FactionMarch {
         if (currentState(gameId) != GameState.ACTIVE) revert GameNotActive(gameId);
         if (zoneId >= games[gameId].zoneCount) revert InvalidZone(zoneId, games[gameId].zoneCount);
         if (units == 0) revert ZeroUnits();
+        if (units > MAX_UNITS_PER_ORDER) revert ExceedsMaxUnitsPerOrder(units, MAX_UNITS_PER_ORDER);
 
         Faction faction = commanderFaction[gameId][commander];
         if (faction == Faction.None) revert NotJoined(commander);

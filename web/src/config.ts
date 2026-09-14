@@ -13,10 +13,10 @@ export const CREDITCOIN_PUBLIC_RPC = 'https://rpc.cc3-testnet.creditcoin.network
 export const PROOF_BUILDER_URL = 'https://prover.cc3-testnet.creditcoin.network';
 
 export const ADDRESSES = {
-  orderBook: '0xA100d72A7F214D669AC3deCEb07E6b35C001fE7F',
-  factionMarch: '0xE3c75BD8B7029175f909141ffD2639D8478C9ea4',
-  proofGate: '0x5F979DaafCc5D3324Ea446e9DcEa829aCe4aE0e1',
-  warChest: '0xc15b39Ecd7068B2a2409f5833389Dd4c7E34B080',
+  orderBook: '0xa9842871a176feeA29590de1A71DE829940FfC36',
+  factionMarch: '0x3FA9CEeD76511372De1396e66D1561e8d5e5af3D',
+  proofGate: '0x3684c468B9Bd5fF998706294C1cA07f49609083a',
+  warChest: '0x27A3fb6e3A576F15e8463b174415F1Ec51BB9f19',
 } as const;
 
 export const SEPOLIA_NETWORK_PARAMS = {

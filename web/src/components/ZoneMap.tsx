@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Interface } from 'ethers';
 import type { GameData } from '../hooks/useGameData';
+import { useCountdown } from '../hooks/useCountdown';
 import { creditcoinReadProvider } from '../lib/providers';
-import { factionColor, factionName } from '../lib/format';
+import { factionColor, factionName, formatCountdown } from '../lib/format';
 import { ADDRESSES } from '../config';
 import FactionMarchAbi from '../abis/FactionMarch.json';
 
@@ -19,6 +20,10 @@ interface CaptureEvent {
 
 export function ZoneMap({ gameId, game }: { gameId: bigint | null; game: GameData }) {
   const [history, setHistory] = useState<CaptureEvent[]>([]);
+  // Called unconditionally, before the early returns below -- these are hooks, and harmless
+  // to compute against the EMPTY game's zeroed-out blocks when there's nothing to show yet.
+  const secondsUntilActive = useCountdown(game.activeStartBlock, game.ccBlockNumber);
+  const secondsUntilSettle = useCountdown(game.settleBlock, game.ccBlockNumber);
 
   useEffect(() => {
     if (gameId === null) return;
@@ -77,6 +82,16 @@ export function ZoneMap({ gameId, game }: { gameId: bigint | null; game: GameDat
       <div className="panel-header">
         <h2>Zone map — game {gameId.toString()}</h2>
         <span className={`stamp ${stateClass}`}>{stateLabel}</span>
+        {game.state === 0 && (
+          <span className="muted mono" title="Time left to join before this game goes ACTIVE">
+            closes in {formatCountdown(secondsUntilActive)}
+          </span>
+        )}
+        {game.state === 1 && (
+          <span className="muted mono" title="Time left before this game goes SETTLED">
+            ends in {formatCountdown(secondsUntilSettle)}
+          </span>
+        )}
       </div>
       <p className="muted">
         Zones {game.zoneCount > 0 ? `0–${game.zoneCount - 1}` : ''}. <strong>Garrison</strong> is the defending units

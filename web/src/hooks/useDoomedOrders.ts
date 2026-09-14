@@ -4,16 +4,29 @@ import type { GameData } from './useGameData';
 import { factionMarchContract } from '../lib/contracts';
 import { creditcoinReadProvider } from '../lib/providers';
 
-export type DoomReason = 'invalid-zone' | 'not-joined' | null;
+export type DoomReason = 'invalid-zone' | 'exceeds-unit-cap' | 'not-joined' | null;
 
-/** Cross-references pending orders against live FactionMarch state to flag the two ways an
+// Matches FactionMarch.MAX_UNITS_PER_ORDER -- a single order can never spend more than this,
+// no matter how large the commander's pool (MAX_UNIT_POOL, 500) has grown, and no matter how
+// long anyone waits. An order requesting more than this can never resolve, no matter when
+// it's proven: Sepolia's OrderBook has no way to see FactionMarch's caps at all (Attestcoin
+// only proves Sepolia -> Creditcoin, never the other direction), so it happily mines a
+// request for any number of units for the same flat fee -- resolveOrder is what actually
+// enforces this, via ExceedsMaxUnitsPerOrder.
+export const MAX_UNITS_PER_ORDER = 10;
+
+/** Cross-references pending orders against live FactionMarch state to flag the three ways an
  * order can be permanently unprovable, not just "running long":
  *   - the zone doesn't exist in this game (resolveOrder always reverts with InvalidZone)
+ *   - the order asks for more units than a single order can ever spend, MAX_UNITS_PER_ORDER
+ *     (always reverts with ExceedsMaxUnitsPerOrder -- unlike a merely-depleted pool, which
+ *     recovers over time via InsufficientUnits, this ceiling can never be waited out)
  *   - the commander never joined before the game left OPEN, and join() itself starts
  *     reverting with GameNotOpen once it does -- there is no way to join after the fact, so
  *     a not-yet-joined commander at that point can never resolve, ever.
- * Shared by CourierBoard (don't let anyone waste gas proving it) and InFlightPanel (don't
- * imply it's still just taking a while). */
+ * Shared by CourierBoard (don't let anyone waste gas proving it), InFlightPanel (don't imply
+ * it's still just taking a while), and OrderComposer (don't let anyone send it in the first
+ * place). */
 export function useDoomedOrders(pending: TrackedOrder[], game: GameData, gameId: bigint | null): Record<string, DoomReason> {
   const [joined, setJoined] = useState<Record<string, boolean>>({});
 
@@ -52,8 +65,9 @@ export function useDoomedOrders(pending: TrackedOrder[], game: GameData, gameId:
   const result: Record<string, DoomReason> = {};
   for (const o of pending) {
     const invalidZone = game.zoneCount > 0 && o.zoneId >= game.zoneCount;
+    const exceedsUnitCap = o.units > MAX_UNITS_PER_ORDER;
     const notJoined = joinWindowClosed && joined[o.commander.toLowerCase()] === false;
-    result[o.key] = invalidZone ? 'invalid-zone' : notJoined ? 'not-joined' : null;
+    result[o.key] = invalidZone ? 'invalid-zone' : exceedsUnitCap ? 'exceeds-unit-cap' : notJoined ? 'not-joined' : null;
   }
   return result;
 }

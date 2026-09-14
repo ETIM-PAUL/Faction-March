@@ -5,6 +5,8 @@ import { useDoomedOrders } from '../hooks/useDoomedOrders';
 import { TYPICAL_MARCH_TIME_MS } from '../config';
 import { formatElapsed, shortAddress } from '../lib/format';
 
+const PAGE_SIZE_OPTIONS = [5, 10, 50];
+
 /** Orders sent but not yet proven, ticking in real time, so the UI never implies instant
  * resolution — march time is the feature, and this is where it's shown. An order that can
  * never resolve (bad zone, or a commander who never joined before the game left OPEN) is
@@ -17,9 +19,18 @@ export function InFlightPanel({ orders, game, gameId }: { orders: TrackedOrder[]
     return () => clearInterval(id);
   }, []);
 
+  const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useState(0);
+
   const pending = orders.filter((o) => !o.resolved);
   const resolved = orders.filter((o) => o.resolved).slice(0, 8);
   const doomed = useDoomedOrders(pending, game, gameId);
+
+  const pageCount = Math.max(1, Math.ceil(pending.length / pageSize));
+  // Clamp rather than reset to 0 -- avoids yanking the page back under someone mid-review
+  // just because a page at the end emptied out (e.g. its last order resolved or settled).
+  const clampedPage = Math.min(page, pageCount - 1);
+  const pageItems = pending.slice(clampedPage * pageSize, clampedPage * pageSize + pageSize);
 
   return (
     <div className="wire-panel">
@@ -42,7 +53,7 @@ export function InFlightPanel({ orders, game, gameId }: { orders: TrackedOrder[]
               </tr>
             </thead>
             <tbody>
-              {pending.map((o) => {
+              {pageItems.map((o) => {
                 const elapsedMs = o.sentAtMs > 0 ? now - o.sentAtMs : 0;
                 const pastTypical = elapsedMs > TYPICAL_MARCH_TIME_MS;
                 const doomReason = doomed[o.key];
@@ -59,7 +70,9 @@ export function InFlightPanel({ orders, game, gameId }: { orders: TrackedOrder[]
                           title={
                             doomReason === 'invalid-zone'
                               ? "This zone doesn't exist in the game — resolveOrder always reverts with InvalidZone."
-                              : 'This commander never joined before the game left OPEN, and joining is no longer possible — resolveOrder always reverts with NotJoined.'
+                              : doomReason === 'exceeds-unit-cap'
+                                ? 'This order asks for more units than a unit pool can ever hold (500 max, no amount of waiting raises that ceiling) — resolveOrder always reverts with InsufficientUnits.'
+                                : 'This commander never joined before the game left OPEN, and joining is no longer possible — resolveOrder always reverts with NotJoined.'
                           }
                         >
                           {o.sentAtMs > 0 ? formatElapsed(elapsedMs) : '…'} — stuck, will never resolve
@@ -82,6 +95,36 @@ export function InFlightPanel({ orders, game, gameId }: { orders: TrackedOrder[]
               })}
             </tbody>
           </table>
+        </div>
+      )}
+      {pending.length > 0 && (
+        <div className="field-row">
+          <button className="ghost" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={clampedPage === 0}>
+            ← Prev
+          </button>
+          <span className="muted">
+            Page {clampedPage + 1} of {pageCount} ({pending.length} in flight)
+          </span>
+          <button className="ghost" onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} disabled={clampedPage === pageCount - 1}>
+            Next →
+          </button>
+          <label className="muted">
+            Show
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setPage(0);
+              }}
+              style={{ marginLeft: 6 }}
+            >
+              {PAGE_SIZE_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       )}
 
