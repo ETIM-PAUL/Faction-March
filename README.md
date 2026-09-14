@@ -5,7 +5,7 @@ captures. Also demonstrates the DeFi track: `WarChest.sol` is an
 undercollateralised credit line backed by proven territory. Built for
 **BUIDL CTC 2026 Fall**, themed on the Attestcoin Protocol (formerly USC).
 
-- **Demo video:** TODO — add before the submission deadline.
+- **Demo video:** https://app.screencastify.com/watch/Lkm77diol5mTP0df18Te
 - **Deck / whitepaper:** https://drive.google.com/file/d/1ISdR8eNg7nR64Xh-mWYRWNQw9BmXSwQP/view?usp=sharing
 
 An Attestcoin-secured territory war: orders are Sepolia transactions, and
@@ -110,8 +110,7 @@ commander can courier their own order and collect their own bounty.
 in a single CC3 transaction (`MAX_BATCH_SIZE = 10` is the native
 precompile's own hard limit, not a choice made here). Real on-chain
 measurement, not a local mock: batching 10 orders costs **56.9% less gas**
-than 10 separate submissions (1,695,981 gas actual vs. 3,938,060 projected —
-see [`SECURITY.md`](./SECURITY.md#gas-profile-the-batch-path-at-10-queries)).
+than 10 separate submissions.
 A single bad order reverts the whole batch by design, so a courier is
 incentivized to only bundle orders it's already confident are valid. Two
 independent courier processes racing for the same bounty pay out to exactly
